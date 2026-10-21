@@ -16,3 +16,4 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run build
       - run: node dist/classify.check.js
+      - run: node dist/proof-break.check.js
