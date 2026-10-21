@@ -20,26 +20,26 @@ Rule: no code beyond the demo until this spec is accepted. Changing a requiremen
 ## 3. Architecture
 
 ```
-GitHub repo ──webhook──▶ Cloudflare Worker (ingress, signature verify, auth)
-                            │ RPC
-                            ▼
-                         RepoSession — one Durable Object per repo
-                            │  Pi Durable: Harness.open(openDurableObjectSqliteStorage(ctx.storage))
-                            │  onWake → ctx.storage.setAlarm(); alarm() → harness.resume()
-                            │  ├─ root conversation (triage/dispatch)
-                            │  ├─ task conversations (1 per job)
-                            │  ├─ reviewer conversation (read-only, cheap model)
-                            │  └─ superfan conversations (background, ownerless)
-                            ├─ Remote execution env per conversation (separate service: git clone/worktree, bash)
-                            └─ WebSocket (hibernatable): watch() ops / viewState()
-Web clients (static site on Cloudflare Pages) ──WSS──▶ Worker ──▶ RepoSession
-GitHub App ◀── REST (installation token) ── Worker/DO (PR create/merge/comment)
+                    ┌──────────────────── VPS (architecture B, decided 2026-10-21) ───────────────────┐
+GitHub repo ──webhook──▶ Caddy (TLS) ──▶ Harness service (systemd, one process)
+                                            │  Pi Durable: Harness.open(SQLite on local disk)
+                                            │  ├─ root conversation (triage/dispatch)
+                                            │  ├─ task conversations (1 per job, own git worktree)
+                                            │  ├─ reviewer conversation (read-only)
+                                            │  └─ superfan conversations (background, ownerless)
+                                            ├─ Worker/reviewer/triage = OpenCode / Pi CLI subprocesses
+                                            │    worker: Meta Muse subscription · reviewer: OpenRouter · triage: free model via OpenCode
+                                            └─ WebSocket: watch() ops / viewState()
+Web clients ──HTTPS/WSS──▶ Caddy ──▶ console (static) + harness service
+GitHub App ◀── REST (installation token) ── harness service (PR create/merge/comment)
+                    └──────────────────────────────────────────────────────────────────────────────────────┘
+Deferred v2: Cloudflare Durable Object per repo + Cloudflare Containers (grill-2 design) — only if the proof outgrows one VPS. The ExecEnv seam (§5) is where execution moves; harness state moves DO-side at that point.
 ```
 
-- **Site:** Vite + React/Preact app on Cloudflare Pages (decided 2026-10-21, grill 2); the current vanilla `index.html` simulation survives only behind `?demo=1`. The site is an **ops console + instruction entry point**: filing a feature in the UI creates the GitHub issue (single source of truth) and submits its ID as the job `requestId` — the webhook for that same issue dedupes against it, so UI-first and GitHub-first instructions converge on one job. No agent code runs on Pages.
-- **Harness host: Cloudflare Durable Objects (decided 2026-10-21).** One `RepoSession` DO per GitHub repo (`idFromName(owner/name)`), SQLite storage inside the DO. The DO *is* the single owner Pi Durable requires — no volume, no instance pinning.
-- **Wake contract (binding, from Pi Durable README):** arm the DO alarm *before* any call that can start work (`submit`, `compact`, `abort`, registry change); `onWake` reports `active` / earliest sleep; `alarm()` re-arms then calls `harness.resume()`. A missing alarm strands sleeping/interrupted work; an early alarm is harmless. Recovery heartbeat ≤ 60 s while work is active.
-- **Execution is NOT in the DO.** Workers/DOs have no repo filesystem or `bash`. Every tool call goes through a remote execution env (§5) — a small stateless service (Cloudflare Container per conversation, or equivalent sandbox host) that owns the clone/worktree. DO eviction must never lose code state: worktrees are rebuildable from git + the durable transcript; unlanded work is pushed to the job's **draft branch** (`agent/<jobId>`, exempt from the approval gate — §6.1) before any long pause. The gate applies to PR-open and merge, never to draft pushes.
+- **Site:** Vite + React/Preact console (grill 2), served by Caddy on the VPS for the proof (Pages is a later static split, no code change). The vanilla `index.html` simulation survives only behind `?demo=1`. The site is an **ops console + instruction entry point**: filing a feature in the UI creates the GitHub issue (single source of truth) and submits its ID as the job `requestId` — the webhook for that same issue dedupes against it, so UI-first and GitHub-first instructions converge on one job.
+- **Harness host: one VPS (architecture B).** Single systemd service owns the SQLite storage on local disk — that process *is* the single owner Pi Durable requires. Restart (crash, deploy, reboot) = service restarts, `harness.resume()` continues from checkpoints. No second instance may ever open the same storage.
+- **Wake contract:** no DO alarms in B. Sleeping tasks use Pi Durable's stored sleeps + process timers (`setTimer`/`now` defaults); a stopped service simply fires overdue sleeps on `resume()`. (The binding DO alarm contract returns in v2.)
+- **Execution is local:** one git worktree per conversation on the VPS, agents run as OpenCode/Pi CLI subprocesses inside it. VPS compromise or disk loss must never lose code state: worktrees are rebuildable from git + the durable transcript; unlanded work is pushed to the job's **draft branch** (`agent/<jobId>`, exempt from the approval gate — §6.1) before any long pause. The gate applies to PR-open and merge, never to draft pushes.
 
 ## 4. Components
 
@@ -47,7 +47,7 @@ GitHub App ◀── REST (installation token) ── Worker/DO (PR create/merge
 |---|---|---|---|
 | C1 | Ingress | Verify GitHub webhook signature; map delivery → submission | `submit({requestId: deliveryId})` |
 | C2 | Dispatcher (root) | Triage input, fork task conversations, report status to issue/PR | `fork(entryId)`, subagent tool pattern (ex. 22/23) |
-| C3 | Worker conversation | Implement one job in its own remote worktree; run tests | per-conversation `cwd` + remote `ExecutionEnv` (pi-env `RemoteExecutionEnv` pattern), `CodingTools` |
+| C3 | Worker conversation | Implement one job in its own local worktree; run tests | per-conversation `cwd` + `NodeExecutionEnv`, `CodingTools`; agent = OpenCode/Pi CLI on Meta Muse subscription |
 | C4 | Reviewer conversation | Read-only review of plan + diff; posts verdict doc | `configure({tools:{remove:[write,edit,bash]}})`, cheap model |
 | C5 | Approval gate + risk classifier | Classify every push/merge (§6.1): normal → reviewer model approves; high-risk → parked for human. Decisions survive restart | deterministic classifier + `hook(ToolTask,{beforeTool})` + `api.memo("approval:<jobId>")` / `api.memo("approval-human:<jobId>")` |
 | C6 | Landing task | Serialize PR merge; run post-merge verification; on failure fork fix conversation + comment on PR | `defineTask` phases `land → verify`, `background:true` verify |
@@ -55,7 +55,7 @@ GitHub App ◀── REST (installation token) ── Worker/DO (PR create/merge
 | C8 | Web client (console) | File instructions (creates GitHub issue), live transcript/tool output, steer, high-risk approve, abort; late join from current view | Vite + React/Preact on Pages; `viewState()` / `watch()` over WSS; GitHub OAuth session |
 | C9 | Budget guard | Per-conversation spend cap; stop runaway runs | `pi.usage` doc + `onYield` hook |
 
-State that must be durable (all in DO SQLite storage, none in process memory): transcripts, submissions/`requestId`s, plan & review docs (`defineDoc`, `fork:"asOf"`), approval memos, task checkpoints, usage. Files/code live only in per-conversation remote worktrees + git; a worktree is a cache, never the source of truth. **Retention:** landed/aborted jobs are archived to R2 after a configured TTL (default 30 days) — the DO keeps live jobs plus an index (job ID, outcome, R2 key); archived transcripts are read-only via the archive, never reloaded into the DO.
+State that must be durable (all in harness SQLite storage on the VPS, none in process memory): transcripts, submissions/`requestId`s, plan & review docs (`defineDoc`, `fork:"asOf"`), approval memos, task checkpoints, usage. Files/code live only in per-conversation worktrees + git; a worktree is a cache, never the source of truth. **Retention:** landed/aborted jobs are archived to object storage (R2 or local tarball dir for proof) after a configured TTL (default 30 days) — storage keeps live jobs plus an index (job ID, outcome, archive key); archived transcripts are read-only, never reloaded.
 
 ## 5. Interfaces
 
@@ -68,11 +68,12 @@ State that must be durable (all in DO SQLite storage, none in process memory): t
 - Reviewer: `read, gh_read` only.
 - Superfan: `tail_logs` (`replay:"safe"`) + `submit(steer)` to main.
 
-**Remote execution env contract (per conversation):** `read/write/edit/listFiles`, `exec(argv)` with streamed output, working dir = that conversation's clone. **Host: Cloudflare Containers, one container per conversation** (decided 2026-10-21, grill 2). Clone strategy: **partial + sparse** — `git clone --filter=blob:none --sparse` at the job base commit, files fetched on demand. Lifecycle: the container lives only while tools run; on pause (awaiting CI/approval/steer) unlanded work is draft-pushed and the container is **destroyed**; resume rebuilds from `agent/<jobId>`. Stable `id` per conversation, so a rebuilt env is the same logical env.
+**Execution env (per conversation, local in B):** Pi Durable `NodeExecutionEnv` over one git worktree per conversation; agent CLIs (OpenCode/Pi) run as subprocesses with that worktree as cwd. Clone strategy: **partial + sparse** — `git clone --filter=blob:none --sparse` at the job base commit. Worktree lifecycle: kept while the job is live (draft-pushed before long pauses), deleted on land/abort; resume recreates from `agent/<jobId>`. (v2 replaces this with the remote contract: Cloudflare Containers behind the same seam.)
+**Model routing (B):** worker = Pi/OpenCode on the operator's **Meta Muse subscription**; reviewer = **OpenRouter API** (different model family from the worker — this is also the independence mechanism for §6.1); triage = a **free model routed through OpenCode**. All three share the VPS; per-role model IDs live in config (§5 Config), never in code.
 
-**Web client protocol:** WSS to the Worker, forwarded to the `RepoSession` DO (hibernatable WebSockets; state rebuilt from `viewState` on wake) → snapshot then commit ops (`watch`). Client commands: `instruct` (creates GitHub issue + job), `submit` (follow-up/steer), `approve(jobId)` (high-risk only, §6.1 — **website is the only human approval surface**, decided grill 2), `abort(conversationId)`. Auth: **GitHub OAuth**; collaborator status checked live against the repo on each command, never cached into a local role table.
+**Web client protocol:** WSS to Caddy → harness service → snapshot (`viewState`) then commit ops (`watch`). Client commands: `instruct` (creates GitHub issue + job), `submit` (follow-up/steer), `approve(jobId)` (high-risk only, §6.1 — **website is the only human approval surface**, decided grill 2), `abort(conversationId)`. Auth: **GitHub OAuth**; collaborator status checked live against the repo on each command, never cached into a local role table.
 
-**Config (Worker vars/secrets, no code changes):** `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `WEBHOOK_SECRET`, `REPO` (single `owner/name`), model IDs per role, per-conversation token budget, execution-env endpoint/token. No storage path — DO SQLite is addressed by repo name.
+**Config (env file on the VPS, no code changes):** `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY_PATH`, `WEBHOOK_SECRET`, `REPO` (single `owner/name`), `OPENROUTER_API_KEY`, model IDs per role (`WORKER_MODEL`, `REVIEWER_MODEL`, `TRIAGE_MODEL`), CLI selector per role (`AGENT_CLI=opencode|pi`), per-conversation budget, storage/worktree paths. Subscription auth files for OpenCode/Pi live in the service account's home — never in the repo or env file.
 
 ## 6. Key flows
 
@@ -92,7 +93,7 @@ State that must be durable (all in DO SQLite storage, none in process memory): t
 - **Human spot-check:** a deterministic 10% sample (hash of job ID) of normal merges is flagged for after-the-fact human audit in the UI. Findings can trigger a revert job (a new instruction, normal flow). This is an audit trail, not a gate — it never blocks a merge.
 - **High-risk:** job parks *before* the effect; a human approves/rejects in the UI (`approval-human:<jobId>` memo). No model approval substitutes. Human `abort`/veto overrides at any time before merge.
 - Approvals are memos: first write wins, cannot be silently overwritten. Draft-branch pushes (`agent/<jobId>`) are exempt from approval, so interrupted work is always recoverable from git.
-3. **Crash/eviction:** DO evicted mid-tool → non-safe tool reported `interrupted` to model (never rerun), safe reads replay → alarm (armed before work started, §3) wakes a new DO instance → `Harness.open(openDurableObjectSqliteStorage(...))` → `resume()` continues from last checkpoint → duplicate webhook/submit returns original submission.
+3. **Crash/restart:** harness process killed mid-tool → non-safe tool reported `interrupted` to model (never rerun), safe reads replay → systemd restarts the service → `Harness.open(SQLite)` → `resume()` continues from last checkpoint, overdue sleeps fire → duplicate webhook/submit returns original submission.
 4. **Steering:** any authorized client submits `whenBusy:"steer"` → lands after current tool round; `abort` cascades to owned subagents, background superfans unaffected.
 
 ## 7. Security (non-negotiable, trust boundary)
@@ -100,42 +101,43 @@ State that must be durable (all in DO SQLite storage, none in process memory): t
 1. Webhook signature verification on every delivery; reject unsigned.
 2. GitHub App, not PAT; short-lived installation tokens; token never logged, never in model-visible args.
 3. Web commands require authenticated session; `abort`/veto and high-risk `approve` require repo-collaborator role. Normal approvals are model-only — no web approve path exists for them. Approvals are memos — first write wins, cannot be silently overwritten.
-4. Execution env is the RCE boundary: one isolated container/sandbox per conversation (never shared, never inside the DO), egress allowlist (GitHub + model provider only), env receives only a short-lived scoped GitHub token, destroyed on land/abort. The DO itself never executes repo code.
+4. Execution is the RCE boundary: in B all conversations share one VPS, so isolation is per-conversation worktree + a dedicated least-privilege service account (no sudo, no access to auth files of other accounts), egress allowlist (GitHub + model providers only), GitHub token scoped + short-lived, worktree deleted on land/abort. Per-conversation containers are the v2 hardening, accepted as deferred for the proof (§10). Subscription auth files (OpenCode/Pi, Meta Muse) sit in the service account home with `600` perms — they are account credentials, treat accordingly.
 5. Reviewer/superfan conversations cannot write, push, or merge — enforced by tool selection, not prompts.
 6. All tool args/results treated as untrusted content in UI (escaped, never executed as instructions).
 
 ## 8. Acceptance criteria (testable, in build order)
 
 **Phase A — Live site:** Vite console on Pages connects via WSS after GitHub OAuth, renders a real harness transcript; an instruction filed in the UI creates exactly one GitHub issue and one job (its webhook dedupes); late-joining client sees current state + live output; the old simulation is reachable only at `?demo=1`.
-**Phase B — Read-only agents:** issue → triage comment posted by agent; evict/reset the DO mid-run (and disable its timers) → alarm-driven wake resumes, same `requestId` produces no duplicate comment; sleeping task fires via alarm, not a process timer; reviewer cannot invoke `write/bash` (attempt is blocked and logged).
-**Phase C — Gated PRs:** unapproved PR-open/merge blocked (draft push exempt), block + approvals survive DO eviction; worker self-approval rejected; a rename of a sensitive file into a benign path is still classified high-risk; non-collaborator instruction runs no agent; normal job merges with zero human action after the instruction *only with green PR CI* (no CI configured ⇒ parks); a high-risk change parks and the model cannot override that park; a job rejected twice parks with reasons posted; duplicate webhook never creates a second PR.
+**Phase B — Read-only agents:** issue → triage comment posted by agent; `kill -9` the harness mid-run → systemd restart resumes from checkpoint, same `requestId` produces no duplicate comment; overdue sleeping task fires on resume; reviewer cannot invoke `write/bash` (attempt is blocked and logged); worker runs on Muse subscription, reviewer verdict demonstrably comes from the OpenRouter model, triage from the free model.
+**Phase C — Gated PRs:** unapproved PR-open/merge blocked (draft push exempt), block + approvals survive harness restart; worker self-approval rejected; a rename of a sensitive file into a benign path is still classified high-risk; non-collaborator instruction runs no agent; normal job merges with zero human action after the instruction *only with green PR CI* (no CI configured ⇒ parks); a high-risk change parks and the model cannot override that park; a job rejected twice parks with reasons posted; duplicate webhook never creates a second PR.
 **Phase D — Self-healing:** deliberately broken change merged in a test repo → failed CI forks a fix conversation and posts diagnosis without human input; after 2 failed fix cycles the job parks instead of looping; two same-file jobs landing in sequence leave main green or parked, never silently broken; 10% spot-check flags appear in the UI; superfan survives main-turn abort; per-conversation budget breach halts the run and reports; a landed job archived to R2 after TTL is still retrievable read-only.
 General: every phase demoable end-to-end on a throwaway repo before touching a real one.
 
-## 9. Deployment & ops (Cloudflare)
+## 9. Deployment & ops (VPS, architecture B)
 
-- **Site:** Cloudflare Pages, static deploy on push to `main`.
-- **Harness:** one Worker + `RepoSession` Durable Object class (SQLite storage), `wrangler deploy`. DO naming: `idFromName("owner/name")` — one DO per repo is the sharding strategy; multi-repo = more DOs, no code change.
-- **Deploy:** Worker deploy replaces code while the DO hibernates/evicts; on next wake the new process reinstalls the same extensions in the registry and `resume()` picks up pending tasks (conversations store extension *names*, not code). No drain needed; never run two registry-incompatible versions against live tasks without checking `task_outdated` reports first.
-- **Execution env service:** Cloudflare Containers (same account), one container per active conversation, destroyed on pause, rebuilt from the draft branch (partial + sparse clone). Scale/lifecycle independent of the DO. Env creation failure = tool error result, never a DO crash. Measure container cold-start + sparse-clone latency in Phase B; if resume latency dominates, revisit a prewarmed pool (explicitly not v1).
-- **Backups:** scheduled export of DO storage (commits/transcript snapshot) to R2 from a cron Worker; restore test (new DO from export, `resume()`, verify transcript) is part of Phase B exit criteria.
-- **Observability:** structured log per submission ID (Workers Logs); `task_parked`/`task_faulted`/`task_outdated` reports surfaced in UI; parked tasks list + `retryTask` action (PLAN Phase 4). Alarm health: report last `onWake` state; a DO with active work and no alarm armed is an alert.
-- **Rollback:** site/Worker = redeploy previous version; harness state is never rolled back (forward-only — fix with a new registry version, or restore DO from R2 export as a new DO and repoint).
+- **One VPS:** Caddy (TLS, static console, reverse proxy) + one harness systemd service + `git`. Deploy = build, restart service, `resume()` verifies pending tasks. Never run two harness instances against one storage.
+- **Agents on the box:** OpenCode + Pi CLIs installed for the service account; Meta Muse subscription logged in once interactively (auth file in service home); OpenRouter key in env. Role routing per §5. Subscription quota is shared by all worker jobs — concurrent workers are capped in config (default 2) to avoid self-throttling.
+- **Backups:** scheduled copy of harness SQLite + worktree index off-box (R2/`rclone`); restore test (fresh dir from backup, `resume()`, verify transcript) is part of Phase B exit criteria.
+- **Observability:** structured log per submission ID (journald); `task_parked`/`task_faulted`/`task_outdated` reports surfaced in UI; parked tasks list + `retryTask` action (PLAN Phase 4). OpenRouter spend is metered per call; Muse/free-model usage is tracked as sessions/time only (§10).
+- **Rollback:** redeploy previous build; harness state is never rolled back (forward-only — fix with a new registry version, or restore storage from backup and `resume()`).
+- **v2 trigger (Cloudflare):** proof succeeds and one VPS saturates (CPU, disk, or subscription rate limits) → move harness to one DO per repo + Containers per the earlier grill-2 design; the §5 ExecEnv seam and draft-branch discipline make execution portable.
 
 ## 10. Risks / open questions
 
 | Risk | Mitigation / decision needed |
 |---|---|
 | Pi Durable API is experimental, changes without notice | Pin exact version; all usage behind our registry/extensions layer; upgrade = deliberate task, not auto |
-| Single DO per repo = throughput ceiling for that repo | Accepted: DOs scale by repo, not within one. Trigger to revisit: one repo saturating a DO's CPU/storage |
-| Missing/mis-armed DO alarm strands work silently | §3 wake contract + alarm-health alert (§9); acceptance test in Phase B with timers disabled |
-| Public webhook + remote `bash` = RCE by design | §7 controls are launch blockers, not Phase-4 items; execution stays outside the DO in per-conversation sandboxes |
+| Single VPS = single point of failure + shared subscription quota | Accepted for proof (architecture B); v2 trigger in §9. Worker concurrency capped (default 2) |
+| Muse subscription used headlessly/automated | Proof only. Consumer subscription terms + rate limits may not permit this at scale; production path is API keys. VPS compromise = subscription account compromise (§7.4) |
+| Budget guard is approximate for subscription/free models | OpenRouter (reviewer) is metered in dollars; worker/triage tracked as sessions/time. Dollar caps bind only where metering exists |
+| Public webhook + local `bash` = RCE by design | §7 controls are launch blockers, not Phase-4 items; per-worktree service account now, per-conversation containers in v2 |
 | ~100 ms progress-commit window | Only affects streamed output loss on crash; correctness state is checkpointed per task |
 | ~~Open: who may approve?~~ Resolved 2026-10-21: humans give instructions only; reviewer model approves normal work, humans approve high-risk only (§6.1) | Done |
 | Grill resolutions 2026-10-21 (all in §3–§8) | Collaborators-only instruction; final-tree-diff + content-scan classifier; draft branch exempt from gate; no re-review on landing conflicts (fix-forwards, §6.1 cap); max 2 auto-fix cycles; PR CI is the sole test gate; 10% human spot-check audits; cold jobs archived to R2 | Done |
-| Open: model/provider + budget defaults per role | Decide before Phase B; store as config, not code. Approver model must be named here before Phase C |
+| ~~Open: model/provider per role~~ Resolved 2026-10-21 (architecture B) | Worker = Meta Muse subscription; reviewer = OpenRouter (exact model ID to `.env` before Phase B); triage = free model via OpenCode routing. Dollar budget binds OpenRouter; subscription roles capped by concurrency/time |
 | ~~Open: keep demo simulation on the public site?~~ Resolved grill 2: `?demo=1` only | Done |
-| Grill 2 resolutions 2026-10-21 (website + execution env) | Vite + React/Preact console on Pages; console files instructions via GitHub issue (webhook dedupes); GitHub OAuth with live collaborator check; website is the sole human approval surface; Cloudflare Containers, destroy-on-pause/rebuild-from-draft; partial + sparse clone | Done |
+| Grill 2 resolutions 2026-10-21 (website + execution env) | Vite + React/Preact console; console files instructions via GitHub issue (webhook dedupes); GitHub OAuth with live collaborator check; website is the sole human approval surface; partial + sparse clone. Execution host superseded by architecture B (below); DO+Containers retained as v2 | Done |
+| Architecture B 2026-10-21 | Single VPS proof: harness + OpenCode/Pi CLIs + local worktrees; worker Muse subscription, reviewer OpenRouter, triage free via OpenCode; Cloudflare DO/Containers deferred to v2 (§9) | Done |
 
 ## 11. Out of scope for v1 (do not build)
 
