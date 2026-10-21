@@ -59,7 +59,8 @@ One warning that matters: one harness process owns the SQLite storage, and `spik
 
 | | |
 |---|---|
-| Host | Linux VPS (Ubuntu 26.04, Node 22), no-sudo `harness` user |
+| Host | Linux VPS (Ubuntu 26.04, Node 22), `harness` user (sudo only for `systemctl restart abc-harness`, used by CD) |
+| CD | Green `main` CI auto-deploys: Actions SSHs with a forced-command key → `scripts/abc-deploy` checks out the exact CI-passed commit → `scripts/deploy.sh` builds, restarts, health-checks. Green CI also finally ships merged changes (no manual redeploy) |
 | Service | systemd `abc-harness` (enabled, `Restart=on-failure`), clone at `/home/harness/abc`, state at `/var/lib/harness/` (`agent.sqlite*`, `worktrees/`) |
 | Public URL | https://piagentdev.tail2a29a7.ts.net (Tailscale Funnel → `127.0.0.1:8971`; console + webhook + OAuth callback all use this hostname) |
 | Models | OpenRouter API only (worker `deepseek/deepseek-v4.1-flash`, reviewer `meta/muse-spark-1.3-contributor`, triage `z-ai/glm-5.3`); no OpenCode or Pi CLI on the box — Pi runs as libraries inside the service |

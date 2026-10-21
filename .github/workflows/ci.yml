@@ -1,6 +1,7 @@
 name: ci
 # Post-merge CI is the real gate (SPEC 6.1). On PRs this is advisory only;
-# branch protection requires no status checks.
+# branch protection requires no status checks. A green build on main then
+# deploys itself to the VPS (deploy job below) - that is the full CD loop.
 on:
   push:
     branches: [main]
@@ -19,3 +20,22 @@ jobs:
       - run: node dist/console.check.js
       - run: node dist/proof-break.check.js
       - run: npm run console:build
+  deploy:
+    name: deploy
+    # CD: only a green main build deploys, and only the exact commit that
+    # passed. The SSH key is a forced-command key on the VPS - it can run
+    # scripts/abc-deploy and nothing else (no shell, no root).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency: deploy-main
+    steps:
+      - name: Deploy to the VPS
+        env:
+          DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' '116.212.75.58 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICJIYjktXMms9CH+Xyd0/xZo2ayfieZT2TU3LASKTBQH' > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy harness@116.212.75.58 "deploy ${{ github.sha }}"

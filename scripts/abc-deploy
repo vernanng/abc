@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# CD entry point on the VPS, installed at /home/harness/bin/abc-deploy and
+# wired as the forced command of the deploy SSH key (see ci.yml). It can only
+# check out the exact CI-passed commit handed over via SSH_ORIGINAL_COMMAND
+# ("deploy <sha>") and run scripts/deploy.sh - the key gets no shell.
+set -euo pipefail
+cd /home/harness/abc
+sha="${SSH_ORIGINAL_COMMAND:-}"
+sha="${sha#deploy }"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "abc-deploy: expected 'deploy <full-sha>', got: ${SSH_ORIGINAL_COMMAND:-<none>}" >&2; exit 1; }
+git fetch -q origin main
+git reset --hard -q "$sha"
+exec bash scripts/deploy.sh
