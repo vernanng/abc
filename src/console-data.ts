@@ -137,18 +137,27 @@ export interface GraphCommit { row: number; lane: number; sha: string; shortSha:
 // Lay out commits as rows for the git graph: newest at row 0, one `lane` per
 // commit (0 = first-parent trunk, +1 for each side branch that opens).
 export function layOutGraph(commits: CommitInput[]): GraphCommit[] {
+  // Pass 1: reserve a lane for every commit that is a non-first parent of a
+  // merge. GitHub returns commits newest-first across all lanes, so a side
+  // branch commit can appear in the list BEFORE the merge that introduced it;
+  // without reserving up front it would default to lane 0 and collide with the
+  // trunk. Reserving first makes the lane assignment order-independent.
   const laneOf = new Map<string, number>();
   let nextLane = 1;
+  for (const commit of commits) {
+    commit.parents.forEach((parent, index) => {
+      if (index > 0 && !laneOf.has(parent)) laneOf.set(parent, nextLane++);
+    });
+  }
   return commits.map((commit, row) => {
     let lane = laneOf.get(commit.sha);
     if (lane === undefined) {
-      lane = 0; // first commit seen is the trunk tip
+      lane = 0; // first-parent trunk
       laneOf.set(commit.sha, lane);
     }
     commit.parents.forEach((parent, index) => {
-      // First parent continues the lane; extra parents (merges) open a lane.
-      const parentLane = index === 0 ? lane : nextLane++;
-      if (!laneOf.has(parent)) laneOf.set(parent, parentLane);
+      // First parent continues the lane; extra parents keep their reserved lane.
+      if (index === 0 && !laneOf.has(parent)) laneOf.set(parent, lane);
     });
     return { row, lane, sha: commit.sha, shortSha: commit.shortSha, message: commit.message, author: commit.author, isMerge: commit.parents.length > 1 };
   });
