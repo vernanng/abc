@@ -49,6 +49,56 @@ export function consoleJobs(records: JournalRecord[]): ConsoleJob[] {
     .reverse(); // newest first
 }
 
+// Status presentation for the console redesign: a stable tone per job status
+// so the UI can color badges/filters without hard-coding the vocabulary in
+// the Preact component (which the check cannot exercise).
+export type StatusTone = "active" | "queued" | "good" | "bad" | "muted";
+const STATUS_TONES: Record<string, StatusTone> = {
+  working: "active",
+  "pr-open": "active",
+  pending: "queued",
+  merged: "good",
+  resolved: "good",
+  failed: "bad",
+  parked: "bad",
+  "no-changes": "muted",
+  closed: "muted",
+};
+
+export function statusTone(status: string): StatusTone {
+  return STATUS_TONES[status] ?? "muted";
+}
+
+// A job is "active" when a live worker conversation may still be steered or
+// aborted - the same predicate drives the steer/abort buttons.
+export function isActiveJob(status: string): boolean {
+  return status === "working" || status === "pr-open";
+}
+
+// Filter the jobs table by a status tab and a case-insensitive free-text
+// query over title / branch / issue number / author. "all" shows everything.
+export function filterJobs(jobs: ConsoleJob[], status: string, query: string): ConsoleJob[] {
+  const needle = query.trim().toLowerCase().replace(/^#/, "");
+  const byStatus = status === "all" ? jobs : jobs.filter((job) => job.status === status);
+  if (needle === "") return byStatus;
+  return byStatus.filter((job) =>
+    [job.title, job.branch ?? "", String(job.issueNumber), job.login ?? ""]
+      .some((field) => field.toLowerCase().includes(needle)),
+  );
+}
+
+// Compact relative age for the jobs table ("just now", "3m", "2h", "5d").
+export function relativeAge(createdAt: number | undefined, now: number): string {
+  if (createdAt === undefined || createdAt <= 0) return "—";
+  const seconds = Math.max(0, Math.round((now - createdAt) / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 export interface ConsoleStats {
   jobs: number;
   byStatus: Record<string, number>;
@@ -77,7 +127,7 @@ export function consoleStats(records: JournalRecord[]): ConsoleStats {
     triage: records.filter((record) => record.kind === undefined || record.kind === "triage").length,
     reviewers: records.filter((record) => record.kind === "review").length,
     ciFailures: records.filter((record) => record.kind === "cifail").length,
-    activeJobs: jobs.filter((job) => job.status === "working" || job.status === "pr-open").length,
+    activeJobs: jobs.filter((job) => isActiveJob(job.status)).length,
   };
 }
 
