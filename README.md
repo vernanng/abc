@@ -6,8 +6,8 @@ Full design: [docs/SPEC.md](docs/SPEC.md) · Background/plan: [docs/PLAN.md](doc
 
 ## Status
 
-- **Phase 0 — proven** (2026-10-21): `spike.mjs` — kill mid-tool → `resume()` continues, same `requestId` dedupes, usage committed. See SPEC §1.
-- **Phase 1 — in progress**: `phase1.mjs` — parallel forks (one worktree each), role models, steering, abort cascade, single-owner lock guard.
+- **Phase 0 — proven** (2026-10-21): `src/spike.ts` — kill mid-tool → `resume()` continues, same `requestId` dedupes, usage committed. See SPEC §1.
+- **Phase 1 — in progress**: `src/phase1.ts` — parallel forks (one worktree each), role models, steering, abort cascade, single-owner lock guard.
 - Phases A–D (live site, harness service, landings) are specified but not built yet.
 
 ## Quick start
@@ -17,17 +17,24 @@ Requires Node.js and an [OpenRouter](https://openrouter.ai) API key.
 ```bash
 npm install
 cp .env.example .env   # fill in OPENROUTER_API_KEY and model IDs
-node spike.mjs submit  # Phase 0 durability spike
-node spike.mjs resume  # reopen + resume; resubmit dedupes
-node phase1.mjs        # Phase 1 parallel-fork acceptance run
+npm run spike -- submit  # build + Phase 0 durability spike
+npm run spike -- resume  # reopen + resume; resubmit dedupes
+npm run phase1           # build + Phase 1 parallel-fork acceptance run
+```
+
+Bun 1.4+ can run the TypeScript sources directly after `npm install`:
+
+```bash
+npm run spike:bun -- open-only
+npm run phase1:bun
 ```
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `spike.mjs` | Phase 0 durability proof |
-| `phase1.mjs` | Phase 1 acceptance: forks, worktrees, steering, abort |
+| `src/spike.ts` | Phase 0 durability proof |
+| `src/phase1.ts` | Phase 1 acceptance: forks, worktrees, steering, abort |
 | `index.html` | Standalone simulation demo |
 | `docs/SPEC.md` | Binding spec (edit this before changing a requirement) |
 | `docs/PLAN.md` | Source plan and Scion → Pi Durable mapping |

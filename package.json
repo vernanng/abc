@@ -2,9 +2,15 @@
   "name": "abc",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/spike.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "spike": "npm run build && node dist/spike.js",
+    "phase1": "npm run build && node dist/phase1.js",
+    "spike:bun": "bun src/spike.ts",
+    "phase1:bun": "bun src/phase1.ts",
+    "test": "npm run typecheck"
   },
   "repository": {
     "type": "git",
@@ -13,7 +19,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "bugs": {
     "url": "https://github.com/vernanng/abc/issues"
   },
@@ -22,5 +28,9 @@
     "@earendil-works/chord": "^1.3.0",
     "@earendil-works/pi-ai": "^1.3.0",
     "@earendil-works/pi-durable": "^1.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
   }
 }

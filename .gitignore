@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 *.pem
-agent.sqlite
+agent.sqlite*
 node_modules/
+dist/
 proof.txt
