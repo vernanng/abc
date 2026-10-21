@@ -13,7 +13,7 @@ Scion-style vibe-coding harness on Pi Durable + GitHub. `docs/SPEC.md` is bindin
 - **Production is live on the VPS** (`abc-harness` systemd service). Never start the service on this Mac, and never run two harness processes against one storage — the Mac SQLite/journal is a stale pre-migration snapshot.
 - `src/spike.ts` opens the same `./agent.sqlite` without the service lock — never run it while any service is up.
 - Agent work lands only via GitHub PR + human approval. The model reviewer never approves; there is no console approve action; branch protection has **no required status checks** and approvals are not dismissed by pushes — don't add a CI gate or merge queue (SPEC §6.1).
-- Sensitive paths (`.github/`, `secrets/`, `auth/`, `docs/SPEC.md`, `docs/PLAN.md`, `src/classify.ts`) need CODEOWNERS approval.
+- The classifier labels `.github/`, `secrets/`, `auth/`, `docs/SPEC.md`, `docs/PLAN.md`, `src/classify.ts` sensitive (owner intent approval). Note `.github/CODEOWNERS` currently only lists `.github/`, `docs/SPEC.md`, `docs/PLAN.md` — classifier-sensitive ≠ CODEOWNERS-covered until that file catches up.
 - Exactly-once invariants: webhook delivery ID = `requestId`, delivery journal + `<!-- abc-agent:<delivery> -->` marker dedupe, `approvalBy` memo is first-write-wins. Don't weaken them.
 - Secrets (`.env`, GitHub App `.pem`) are never committed, printed, or put in model-visible args. `.env.example` lists only env vars the code actually reads.
 - Models go through OpenRouter only. No OpenCode or Pi CLI exists on the VPS — Pi is libraries inside the Node service.
