@@ -149,13 +149,13 @@ export class GitHubApp {
     return issue.number;
   }
 
-  async getPull(pullNumber: number): Promise<{ merged: boolean; mergeable: boolean | null }> {
+  async getPull(pullNumber: number): Promise<{ state: string; merged: boolean; mergeable: boolean | null }> {
     const token = await this.installationToken();
-    const pull = await this.api<{ merged_at?: string | null; mergeable?: boolean | null }>(
+    const pull = await this.api<{ state?: string; merged_at?: string | null; mergeable?: boolean | null }>(
       `/repos/${this.owner}/${this.name}/pulls/${pullNumber}`,
       { token },
     );
-    return { merged: pull.merged_at != null, mergeable: pull.mergeable ?? null };
+    return { state: pull.state ?? "", merged: pull.merged_at != null, mergeable: pull.mergeable ?? null };
   }
 
   // Completed/failed workflow runs on main, newest first (post-merge gate).

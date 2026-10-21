@@ -377,9 +377,14 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
     // Existing PR (incl. system records like auto-reverts): merge when a
     // human approval exists; if GitHub reports a conflict, the worker
     // conversation resolves it — never a merge queue (SPEC Phase D).
+    const pull = await github.getPull(record.prNumber);
+    if (!pull.merged && pull.state === "closed") {
+      record.jobStatus = "closed";
+      markPosted(record.delivery);
+      return "pr-closed";
+    }
     const result = await tryMerge(record);
     if (result === "merge-blocked" && record.approvalBy !== undefined && (record.resolveAttempts ?? 0) < 2) {
-      const pull = await github.getPull(record.prNumber);
       if (!pull.merged && pull.mergeable === false) {
         await resolveConflict(record);
         return "conflict-resolution-pushed";
