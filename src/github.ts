@@ -172,6 +172,24 @@ export class GitHubApp {
     }));
   }
 
+  // Recent commits on a branch, newest first, with parent SHAs so the console
+  // can render a commit graph without shelling out to git (SPEC Phase A).
+  async listCommits(branch: string, perPage = 30): Promise<Array<{ sha: string; shortSha: string; message: string; author: string; date: string; parents: string[] }>> {
+    const token = await this.installationToken();
+    const commits = await this.api<Array<{ sha: string; commit: { message: string; author?: { name?: string; date?: string } }; author?: { login?: string }; parents?: Array<{ sha: string }> }>>(
+      `/repos/${this.owner}/${this.name}/commits?sha=${encodeURIComponent(branch)}&per_page=${perPage}`,
+      { token },
+    );
+    return commits.map((commit) => ({
+      sha: commit.sha,
+      shortSha: commit.sha.slice(0, 7),
+      message: (commit.commit.message ?? "").split("\n")[0] ?? "",
+      author: commit.author?.login ?? commit.commit.author?.name ?? "unknown",
+      date: commit.commit.author?.date ?? "",
+      parents: (commit.parents ?? []).map((parent) => parent.sha),
+    }));
+  }
+
   async mergePull(pullNumber: number): Promise<void> {
     const token = await this.installationToken();
     await this.api(`/repos/${this.owner}/${this.name}/pulls/${pullNumber}/merge`, {
