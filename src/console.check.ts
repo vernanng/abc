@@ -2,7 +2,7 @@
 // the durable journal and the git-graph lane layout. Both are pure, so they
 // can be verified without GitHub or a running service. npm run check:console
 import assert from "node:assert";
-import { consoleJobs, consoleStats, layOutGraph, type JournalRecord } from "./console-data.js";
+import { consoleJobs, consoleStats, filterJobs, isActiveJob, layOutGraph, relativeAge, statusTone, type JournalRecord } from "./console-data.js";
 
 const records: JournalRecord[] = [
   { delivery: "triage-1", issueNumber: 1, title: "t", login: "a", posted: true },
@@ -55,5 +55,29 @@ assert.equal(merged[0]?.lane, 0);
 assert.equal(merged[1]?.lane, 0); // first parent continues trunk
 assert.ok((merged[2]?.lane ?? 0) > 0); // side branch gets its own lane
 assert.equal(merged[3]?.lane, 0); // shared root stays on trunk
+
+// Status tone drives badge/filter coloring.
+assert.equal(statusTone("working"), "active");
+assert.equal(statusTone("pr-open"), "active");
+assert.equal(statusTone("merged"), "good");
+assert.equal(statusTone("failed"), "bad");
+assert.equal(statusTone("pending"), "queued");
+assert.equal(statusTone("mystery"), "muted");
+assert.equal(isActiveJob("working"), true);
+assert.equal(isActiveJob("merged"), false);
+
+// Jobs table: status tab + free-text filter over title/branch/issue/author.
+assert.equal(filterJobs(jobs, "all", "").length, jobs.length);
+assert.equal(filterJobs(jobs, "merged", "").length, 1);
+assert.equal(filterJobs(jobs, "all", "AGENT/2")[0]?.delivery, "job-2"); // case-insensitive
+assert.equal(filterJobs(jobs, "all", "#3")[0]?.delivery, "job-3");
+assert.equal(filterJobs(jobs, "merged", "two").length, 0); // status tab and query combine
+
+// Relative age formatting.
+assert.equal(relativeAge(undefined, 1000), "—");
+assert.equal(relativeAge(1000, 1000), "just now");
+assert.equal(relativeAge(1000, 1000 + 5 * 60_000), "5m");
+assert.equal(relativeAge(1000, 1000 + 3 * 3600_000), "3h");
+assert.equal(relativeAge(1000, 1000 + 2 * 24 * 3600_000), "2d");
 
 console.log("console checks passed");
