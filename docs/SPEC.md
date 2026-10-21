@@ -1,6 +1,6 @@
 # SPEC: Scion-style vibe coding on Pi Durable + GitHub
 
-Status: draft, pre-implementation. Source plan: `PLAN.md`. Demo: `index.html` (simulation only).
+Status: draft, pre-implementation. Source plan: `PLAN.md` (same folder). Demo: `../index.html` (simulation only).
 Rule: no code beyond the demo until this spec is accepted. Changing a requirement = edit this file first.
 
 ## 1. Goal / Non-goals
