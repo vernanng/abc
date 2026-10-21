@@ -18,6 +18,7 @@ jobs:
       - run: npm run build
       - run: node dist/classify.check.js
       - run: node dist/console.check.js
+      - run: node dist/worktree.check.js
       - run: node dist/proof-break.check.js
       - run: npm run console:build
   deploy:
