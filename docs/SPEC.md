@@ -1,6 +1,6 @@
 # SPEC: Scion-style vibe coding on Pi Durable + GitHub
 
-Status: Phase 0 proven 2026-10-21 (spike.mjs: kill -9 mid-tool -> resume, same submission id 8, task completed). Pre-implementation for Phases A-D. Source plan: `PLAN.md` (same folder). Demo: `../index.html` (simulation only).
+Status: Phase 0 hard-proven 2026-10-21 (spike.mjs + grill tests, all in a scratch cwd): kill -9 mid-`bash sleep` -> transcript shows the interrupted tool result, model retries, exactly 1 append to counter.txt, same submission id 8 after resubmit, `pi.usage` committed (5,919 tokens, $0.00019). **Finding:** a second process *can* `Harness.open` the same SQLite storage while the first is alive — single-owner is operator discipline, not library enforcement. Phase 1 must add a PID/lockfile guard to the harness service; two live schedulers on one storage are forbidden. Pre-implementation for Phases A-D. Source plan: `PLAN.md` (same folder). Demo: `../index.html` (simulation only).
 Rule: no code beyond the demo until this spec is accepted. Changing a requirement = edit this file first.
 
 ## 1. Goal / Non-goals
