@@ -3,3 +3,4 @@
 !.env.example
 *.pem
 agent.sqlite
+node_modules/

@@ -1,0 +1,26 @@
+{
+  "name": "abc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vernanng/abc.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/vernanng/abc/issues"
+  },
+  "homepage": "https://github.com/vernanng/abc#readme",
+  "dependencies": {
+    "@earendil-works/chord": "^1.3.0",
+    "@earendil-works/pi-ai": "^1.3.0",
+    "@earendil-works/pi-durable": "^1.3.0"
+  }
+}
