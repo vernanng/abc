@@ -24,7 +24,7 @@ Effects are exactly-once or explicitly interrupted — never silently duplicated
 | B | GitHub App webhook service: signed delivery → triage comment, dedupe, crash recovery (`src/service.ts`, `src/github.ts`) | Proven 2026-10-22 |
 | C | Worker job → draft branch → classifier + reviewer → intent-packet PR → merge on human approval | Proven 2026-10-22 (issue #6 → PR #7) |
 | D | Post-merge self-healing: CI-failure fix jobs, auto-revert, conflict resolution, budget park | Implemented in `src/service.ts`; see SPEC §8 for the acceptance run |
-| A | Live web console | Not built — `index.html` is a simulation only |
+| A | Live web console: stats dashboard, git graph, jobs table, instruct/steer/abort, open issue/PR links | Proven 2026-10-22; `index.html` survives only behind `/?demo=1` |
 
 Proof details live in the status line of [docs/SPEC.md](docs/SPEC.md).
 

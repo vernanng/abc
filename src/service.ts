@@ -16,6 +16,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
 import { classify, type ChangedFile } from "./classify.js";
+import { consoleJobs, consoleStats, layOutGraph } from "./console-data.js";
 import { GitHubApp } from "./github.js";
 
 for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
@@ -778,6 +779,9 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
 }
+
+// Console derived data (SPEC Phase A) lives in ./console-data.ts (pure, and
+// shared with the console check) so it can be verified without a live service.
 async function requireCollaborator(request: IncomingMessage, response: ServerResponse): Promise<string | undefined> {
   const session = readSession(request);
   if (session === undefined) {
@@ -905,24 +909,30 @@ async function handleConsole(request: IncomingMessage, response: ServerResponse)
   if (path === "/api/me") {
     const session = readSession(request);
     if (session === undefined) json(response, 401, { error: "not signed in" });
-    else json(response, 200, { login: session.login });
+    else json(response, 200, { login: session.login, repo: repoSlug });
     return true;
   }
   if (path === "/api/state") {
     if ((await requireCollaborator(request, response)) === undefined) return true;
-    const jobs = journal
-      .filter((record) => record.kind === "job" || record.kind === "cifail")
-      .map((record) => ({
-        delivery: record.delivery,
-        kind: record.kind,
-        issueNumber: record.issueNumber,
-        title: record.title,
-        status: record.jobStatus ?? (record.posted ? "done" : "pending"),
-        prNumber: record.prNumber,
-        approvalBy: record.approvalBy,
-      }))
-      .reverse();
-    json(response, 200, { jobs });
+    json(response, 200, { jobs: consoleJobs(journal) });
+    return true;
+  }
+  if (path === "/api/stats") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    json(response, 200, consoleStats(journal));
+    return true;
+  }
+  if (path === "/api/gitgraph") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    // Read-only GitHub call; failures degrade to an empty graph rather than
+    // breaking the console (CI/Actions data is best-effort).
+    const branch = url.searchParams.get("branch") ?? "main";
+    try {
+      const commits = await github.listCommits(branch, 30);
+      json(response, 200, { branch, commits: layOutGraph(commits) });
+    } catch (error) {
+      json(response, 200, { branch, commits: [], error: String(error).slice(0, 200) });
+    }
     return true;
   }
   if (path === "/api/transcript") {

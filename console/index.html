@@ -11,7 +11,23 @@
   .job { border: 1px solid #30363d; border-radius: 8px; padding: .6rem .9rem; margin: .5rem 0; cursor: pointer; }
   .job.sel { border-color: #58a6ff; } .msg { white-space: pre-wrap; border-left: 3px solid #30363d; padding: .3rem .6rem; margin: .4rem 0; }
   .msg.assistant { border-color: #238636; } .msg.user { border-color: #58a6ff; }
-  .row { display: flex; gap: .5rem; } .muted { color: #8b949e; }
+  .row { display: flex; gap: .5rem; align-items: center; } .muted { color: #8b949e; }
+  .top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: .5rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .5rem; }
+  .card { border: 1px solid #30363d; border-radius: 8px; padding: .5rem .7rem; background: #0d1117; }
+  .card-value { font-size: 1.4rem; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #21262d; }
+  table.jobs tbody tr { cursor: pointer; }
+  table.jobs tbody tr:hover { background: #161b22; }
+  table.jobs tr.sel { background: #11212f; }
+  .graph td { vertical-align: middle; }
+  .graph .sha { font-family: ui-monospace, monospace; }
+  .graph .lane { white-space: nowrap; }
+  .lane-gap { display: inline-block; width: 14px; }
+  .node { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #58a6ff; border: 1px solid #0d1117; }
+  .node.merge { background: #d29922; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
 </style>
 </head>
 <body>
