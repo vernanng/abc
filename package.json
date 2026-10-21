@@ -11,6 +11,7 @@
     "service": "npm run build && npm run console:build && node dist/service.js",
     "console:build": "vite build console",
     "check:classify": "npm run build && node dist/classify.check.js",
+    "check:console": "npm run build && node dist/console.check.js",
     "check:proof-break": "npm run build && node dist/proof-break.check.js",
     "spike:bun": "bun src/spike.ts",
     "phase1:bun": "bun src/phase1.ts",

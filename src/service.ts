@@ -16,6 +16,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
 import { classify, type ChangedFile } from "./classify.js";
+import { buildGitGraph, computeStats, parseGitLog } from "./console-data.js";
 import { GitHubApp } from "./github.js";
 
 for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
@@ -255,6 +256,17 @@ async function driveTriage(record: DeliveryRecord): Promise<string> {
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, stdio: "pipe", timeout: 180_000 }).toString();
+}
+
+// Commit/branch graph for the console, read from the service repo (never a
+// worktree, so a busy job cannot corrupt the view). Best-effort: an empty
+// string renders as an empty graph rather than a 500.
+function gitLogAll(): string {
+  try {
+    return git(process.cwd(), "log", "--all", "--date-order", "-n", "120", "--pretty=format:%H%x09%s%x09%D");
+  } catch {
+    return "";
+  }
 }
 
 // Service-side push with the App token; the token never reaches a model and
@@ -928,6 +940,23 @@ async function handleConsole(request: IncomingMessage, response: ServerResponse)
   if (path === "/api/transcript") {
     if ((await requireCollaborator(request, response)) === undefined) return true;
     json(response, 200, { messages: await transcriptFor(url.searchParams.get("who") ?? "triage") });
+    return true;
+  }
+  if (path === "/api/stats") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    const stats = computeStats(journal);
+    let spendUsd = 0;
+    try {
+      spendUsd = await sessionCostUsd();
+    } catch {
+      spendUsd = 0;
+    }
+    json(response, 200, { ...stats, spendUsd });
+    return true;
+  }
+  if (path === "/api/graph") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    json(response, 200, { ...buildGitGraph(parseGitLog(gitLogAll())), jobs: journal.filter((record) => record.kind === "job" || record.kind === "cifail").map((record) => ({ delivery: record.delivery, issueNumber: record.issueNumber, branch: record.branch, prNumber: record.prNumber, jobStatus: record.jobStatus })) });
     return true;
   }
   if (request.method === "POST" && (path === "/api/instruct" || path === "/api/steer" || path === "/api/abort")) {

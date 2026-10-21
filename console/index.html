@@ -12,6 +12,27 @@
   .job.sel { border-color: #58a6ff; } .msg { white-space: pre-wrap; border-left: 3px solid #30363d; padding: .3rem .6rem; margin: .4rem 0; }
   .msg.assistant { border-color: #238636; } .msg.user { border-color: #58a6ff; }
   .row { display: flex; gap: .5rem; } .muted { color: #8b949e; }
+  .tabs { display: flex; gap: .5rem; margin: 1rem 0; }
+  .tabs button.active { border-color: #58a6ff; color: #58a6ff; }
+  .stats { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+  .stat { display: flex; flex-direction: column; align-items: center; border: 1px solid #30363d; border-radius: 8px; padding: .5rem .9rem; min-width: 84px; }
+  .stat-num { font-size: 1.4rem; font-weight: 600; }
+  .statusbar { display: flex; flex-wrap: wrap; gap: .35rem; width: 100%; }
+  .pill { border: 1px solid #30363d; border-radius: 999px; padding: .1rem .6rem; font-size: .85rem; }
+  .pill.st-merged { border-color: #238636; color: #3fb950; }
+  .pill.st-working, .pill.st-pending { border-color: #d29922; color: #d29922; }
+  .pill.st-failed, .pill.st-parked, .pill.st-closed { border-color: #f85149; color: #f85149; }
+  .graph-legend { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: .5rem; }
+  .legend-item { display: inline-flex; align-items: center; gap: .3rem; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; }
+  .commits { list-style: none; padding: 0; margin: 0; }
+  .commit { display: flex; align-items: center; gap: .5rem; padding: .15rem 0; white-space: nowrap; overflow: hidden; }
+  .node { width: .6rem; height: .6rem; border-radius: 50%; flex: 0 0 auto; }
+  .sha { color: #8b949e; }
+  .subject { overflow: hidden; text-overflow: ellipsis; }
+  .ref { border: 1px solid #30363d; border-radius: 4px; padding: 0 .35rem; font-size: .8rem; }
+  .ref-agent { border-color: #a371f7; color: #a371f7; }
+  .jobref { margin-right: .5rem; }
 </style>
 </head>
 <body>
