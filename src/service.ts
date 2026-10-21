@@ -4,13 +4,14 @@
 // a human's GitHub approval. The service, never a model, does git/GitHub.
 //   npm run build && node dist/service.js     (listens on PORT, default 8971)
 import { execFileSync } from "node:child_process";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { AssistantEntry, createRegistry, Harness, type Conversation, type EntryId } from "@earendil-works/pi-durable";
+import { AssistantEntry, createRegistry, Harness, type Conversation, type ConversationId, type EntryId } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
@@ -125,6 +126,8 @@ interface DeliveryRecord {
   attempts?: number;
   // Phase C job state (kind "job"); every step is journaled so a restart
   // resumes instead of restarting, and re-drives never open a second PR.
+  workerConversationId?: string;
+  reviewerConversationId?: string;
   branch?: string;
   prNumber?: number;
   jobStatus?: string; // working | pr-open | merged | no-changes | failed
@@ -139,8 +142,10 @@ const journalPath = `${storagePath}.deliveries.json`;
 const journal: DeliveryRecord[] = existsSync(journalPath)
   ? (JSON.parse(readFileSync(journalPath, "utf8")) as DeliveryRecord[])
   : [];
+let onJournalChange: () => void = () => {};
 function saveJournal(): void {
   writeFileSync(journalPath, JSON.stringify(journal));
+  onJournalChange(); // live console: journal is the state the UI renders
 }
 function recordDelivery(record: DeliveryRecord): boolean {
   if (journal.some((existing) => existing.delivery === record.delivery)) return false;
@@ -290,6 +295,7 @@ async function runRole(options: {
   readOnly?: boolean;
   content: string;
   requestId: string;
+  onConversation?: (id: string) => void;
 }): Promise<string | undefined> {
   for (let attempt = 0; attempt <= 2; attempt++) {
     const conversation = await harness.createConversation(
@@ -299,6 +305,7 @@ async function runRole(options: {
       },
       ctx,
     );
+    options.onConversation?.(String(conversation.id));
     await conversation.configure(
       {
         instructions: options.instructions,
@@ -429,6 +436,10 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
         `${instruction}\n\nFirst write a short plan (3-6 bullets), then implement it. ` +
         "End your reply with exactly these sections:\nPlan: ...\nSummary: ...\nTests: ...",
       requestId: `${record.delivery}:worker`,
+      onConversation: (id) => {
+        record.workerConversationId = id;
+        saveJournal();
+      },
     });
     if (workerText === undefined) {
       record.jobStatus = "failed";
@@ -496,6 +507,10 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
           `${files.map((file) => `- ${file.path}`).join("\n")}\nClassifier: level=${result.level} labels=${result.labels.join(",") || "none"}\n` +
           `Diff (truncated):\n\`\`\`diff\n${diff.slice(0, 12_000)}\n\`\`\``,
         requestId: `${record.delivery}:reviewer`,
+        onConversation: (id) => {
+          record.reviewerConversationId = id;
+          saveJournal();
+        },
       })) ?? "(reviewer produced no critique)";
     await pushBranch(wt, branch);
     const packet = [
@@ -729,6 +744,274 @@ function sweepUnposted(): void {
   for (const record of journal.filter((existing) => !existing.posted)) driveOnce(record);
 }
 
+// --- Phase A: console (OAuth session, API, WebSocket, static SPA) ---------
+// Approval never happens here (SPEC 6.1): the console instructs, steers and
+// aborts; landing approval lives on GitHub PRs. Every command re-checks
+// collaborator status live against the repo.
+const oauthClientId = required("GITHUB_OAUTH_CLIENT_ID");
+const oauthClientSecret = required("GITHUB_OAUTH_CLIENT_SECRET");
+const publicBase = (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, "");
+
+interface Session { login: string; exp: number }
+function signSession(login: string): string {
+  const payload = Buffer.from(JSON.stringify({ login, exp: Date.now() + 7 * 24 * 3600_000 })).toString("base64url");
+  const sig = createHmac("sha256", oauthClientSecret).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+function readSession(request: IncomingMessage): Session | undefined {
+  const cookie = (request.headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith("abc_session="));
+  if (cookie === undefined) return undefined;
+  const [payload, sig] = cookie.slice("abc_session=".length).split(".");
+  if (payload === undefined || sig === undefined) return undefined;
+  const expected = createHmac("sha256", oauthClientSecret).update(payload).digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return undefined;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Session;
+    return session.exp > Date.now() ? session : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function json(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { "Content-Type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+async function requireCollaborator(request: IncomingMessage, response: ServerResponse): Promise<string | undefined> {
+  const session = readSession(request);
+  if (session === undefined) {
+    json(response, 401, { error: "not signed in" });
+    return undefined;
+  }
+  if (!(await github.isCollaborator(session.login))) {
+    json(response, 403, { error: "repo collaborators only" });
+    return undefined;
+  }
+  return session.login;
+}
+
+async function conversationById(id: string | undefined): Promise<Conversation | undefined> {
+  if (id === undefined) return undefined;
+  return harness.conversation(Number(id) as ConversationId, ctx);
+}
+async function transcriptFor(who: string): Promise<Array<{ role: string; text: string }>> {
+  let conversation: Conversation | undefined = who === "triage" ? triage : undefined;
+  if (conversation === undefined) {
+    const job = journal.find((record) => record.delivery === who);
+    conversation = await conversationById(job?.workerConversationId);
+  }
+  if (conversation === undefined) return [];
+  const view = await conversation.context(ctx);
+  return view.messages.slice(-120).map((message) => {
+    const blocks = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+    const text = blocks
+      .map((block) => {
+        if (block.type === "text") return block.text;
+        if (block.type === "toolCall") return `[tool call: ${(block as { name?: string }).name ?? "?"}]`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    return { role: message.role, text: text.slice(0, 2000) || "(tool result)" };
+  });
+}
+
+const wsClients = new Set<import("node:net").Socket>();
+function wsFrame(text: string): Buffer {
+  const data = Buffer.from(text);
+  const header =
+    data.length < 126
+      ? Buffer.from([0x81, data.length])
+      : data.length < 65_536
+        ? Buffer.from([0x81, 126, (data.length >> 8) & 0xff, data.length & 0xff])
+        : Buffer.from([0x81, 127, 0, 0, 0, 0, (data.length >>> 24) & 0xff, (data.length >>> 16) & 0xff, (data.length >>> 8) & 0xff, data.length & 0xff]);
+  return Buffer.concat([header, data]);
+}
+function wsBroadcast(value: unknown): void {
+  const frame = wsFrame(JSON.stringify(value));
+  for (const socket of wsClients) {
+    try {
+      socket.write(frame);
+    } catch {
+      wsClients.delete(socket);
+    }
+  }
+}
+onJournalChange = () => wsBroadcast({ type: "state" });
+setInterval(() => {
+  if (wsClients.size > 0) wsBroadcast({ type: "tick" });
+}, 3000).unref();
+
+const consoleDist = new URL("../console/dist/", import.meta.url);
+const CONTENT_TYPES: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
+function serveFile(response: ServerResponse, fileUrl: URL): boolean {
+  try {
+    const content = readFileSync(fileUrl);
+    response.writeHead(200, { "Content-Type": CONTENT_TYPES[extname(fileUrl.pathname)] ?? "application/octet-stream" });
+    response.end(content);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function handleConsole(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
+  const url = new URL(request.url ?? "/", "http://localhost");
+  const path = url.pathname;
+  if (path === "/auth/login") {
+    const state = randomBytes(16).toString("hex");
+    const authorize = new URL("https://github.com/login/oauth/authorize");
+    authorize.searchParams.set("client_id", oauthClientId);
+    authorize.searchParams.set("redirect_uri", `${publicBase}/auth/callback`);
+    authorize.searchParams.set("scope", "read:user");
+    authorize.searchParams.set("state", state);
+    response.writeHead(302, { Location: authorize.toString(), "Set-Cookie": `abc_oauth_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600` });
+    response.end();
+    return true;
+  }
+  if (path === "/auth/logout") {
+    response.writeHead(302, { Location: "/", "Set-Cookie": "abc_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0" });
+    response.end();
+    return true;
+  }
+  if (path === "/auth/callback") {
+    const stateCookie = (request.headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith("abc_oauth_state="))?.slice("abc_oauth_state=".length);
+    const code = url.searchParams.get("code");
+    if (code === null || stateCookie === undefined || url.searchParams.get("state") !== stateCookie) {
+      json(response, 400, { error: "bad OAuth callback" });
+      return true;
+    }
+    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: oauthClientId, client_secret: oauthClientSecret, code, redirect_uri: `${publicBase}/auth/callback` }),
+    });
+    const tokenData = (await tokenResponse.json()) as { access_token?: string };
+    if (tokenData.access_token === undefined) {
+      json(response, 401, { error: "OAuth exchange failed" });
+      return true;
+    }
+    const userResponse = await fetch("https://api.github.com/user", { headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${tokenData.access_token}` } });
+    const user = (await userResponse.json()) as { login?: string };
+    if (user.login === undefined || !(await github.isCollaborator(user.login))) {
+      json(response, 403, { error: "repo collaborators only" });
+      return true;
+    }
+    response.writeHead(302, { Location: "/", "Set-Cookie": `abc_session=${signSession(user.login)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${7 * 24 * 3600}` });
+    response.end();
+    return true;
+  }
+  if (path === "/api/me") {
+    const session = readSession(request);
+    if (session === undefined) json(response, 401, { error: "not signed in" });
+    else json(response, 200, { login: session.login });
+    return true;
+  }
+  if (path === "/api/state") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    const jobs = journal
+      .filter((record) => record.kind === "job" || record.kind === "cifail")
+      .map((record) => ({
+        delivery: record.delivery,
+        kind: record.kind,
+        issueNumber: record.issueNumber,
+        title: record.title,
+        status: record.jobStatus ?? (record.posted ? "done" : "pending"),
+        prNumber: record.prNumber,
+        approvalBy: record.approvalBy,
+      }))
+      .reverse();
+    json(response, 200, { jobs });
+    return true;
+  }
+  if (path === "/api/transcript") {
+    if ((await requireCollaborator(request, response)) === undefined) return true;
+    json(response, 200, { messages: await transcriptFor(url.searchParams.get("who") ?? "triage") });
+    return true;
+  }
+  if (request.method === "POST" && (path === "/api/instruct" || path === "/api/steer" || path === "/api/abort")) {
+    const login = await requireCollaborator(request, response);
+    if (login === undefined) return true;
+    const payload = JSON.parse((await readBody(request)).toString("utf8")) as { title?: string; body?: string; delivery?: string; text?: string };
+    if (path === "/api/instruct") {
+      if (!payload.title || !payload.body) {
+        json(response, 400, { error: "title and body required" });
+        return true;
+      }
+      // One issue + one job: the issue is filed by the App, and the job is
+      // submitted directly under a ui- requestId - the webhook for the
+      // bot-authored issue is ignored (bot sender), so nothing double-fires.
+      const issueNumber = await github.createIssue(payload.title, payload.body);
+      const record: DeliveryRecord = {
+        delivery: `ui-${issueNumber}`,
+        kind: "job",
+        issueNumber,
+        title: payload.title,
+        body: payload.body,
+        commentBody: "",
+        association: "OWNER",
+        login,
+        posted: false,
+      };
+      recordDelivery(record);
+      driveOnce(record);
+      json(response, 200, { issueNumber });
+      return true;
+    }
+    const job = journal.find((record) => record.delivery === payload.delivery && record.kind === "job");
+    if (job === undefined) {
+      json(response, 404, { error: "job not found" });
+      return true;
+    }
+    const conversation = await conversationById(job.workerConversationId);
+    if (path === "/api/steer") {
+      if (conversation !== undefined && payload.text) {
+        await conversation.submit({ type: "input", content: payload.text, whenBusy: "steer", requestId: `steer-${Date.now()}` }, ctx);
+        json(response, 200, { mode: "steered" });
+        return true;
+      }
+      const followUp: DeliveryRecord = {
+        delivery: `ui-${job.issueNumber}-${Date.now()}`,
+        kind: "job",
+        issueNumber: job.issueNumber,
+        title: job.title,
+        body: `Follow-up instruction from @${login}: ${payload.text ?? ""}`,
+        commentBody: "",
+        association: "OWNER",
+        login,
+        posted: false,
+      };
+      recordDelivery(followUp);
+      driveOnce(followUp);
+      json(response, 200, { mode: "followup-job" });
+      return true;
+    }
+    // /api/abort
+    if (conversation === undefined) {
+      json(response, 409, { error: "job is not running" });
+      return true;
+    }
+    await conversation.abort(ctx);
+    json(response, 200, { ok: true });
+    return true;
+  }
+  if (request.method === "GET" && !path.startsWith("/api")) {
+    if (path === "/" && url.searchParams.get("demo") === "1") {
+      serveFile(response, new URL("../index.html", import.meta.url)); // simulation only, SPEC Phase A
+      return true;
+    }
+    if (path === "/") {
+      if (serveFile(response, new URL("index.html", consoleDist))) return true;
+      json(response, 503, { error: "console not built (npm run console:build)" });
+      return true;
+    }
+    const asset = new URL(`.${path}`, consoleDist);
+    if (asset.pathname.startsWith(consoleDist.pathname) && serveFile(response, asset)) return true;
+  }
+  return false;
+}
+
 function readBody(request: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -745,6 +1028,7 @@ const server = createServer(async (request: IncomingMessage, response: ServerRes
       response.end(JSON.stringify({ ok: true }));
       return;
     }
+    if (await handleConsole(request, response)) return;
     if (request.method !== "POST" || request.url !== "/webhook") {
       response.writeHead(404); response.end(); return;
     }
@@ -774,6 +1058,48 @@ const server = createServer(async (request: IncomingMessage, response: ServerRes
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: String(error) }));
   }
+});
+
+// WebSocket live channel: snapshot events on journal change + 3s ticks.
+// Commands travel over POST /api/*; the socket is server -> client only.
+server.on("upgrade", (request: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
+  const url = new URL(request.url ?? "/", "http://localhost");
+  const key = request.headers["sec-websocket-key"];
+  if (url.pathname !== "/ws" || typeof key !== "string" || readSession(request) === undefined) {
+    socket.destroy();
+    return;
+  }
+  const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  if (head.length > 0) socket.unshift(head);
+  wsClients.add(socket);
+  socket.write(wsFrame(JSON.stringify({ type: "state" })));
+  socket.on("data", (chunk: Buffer) => {
+    let offset = 0;
+    while (offset + 2 <= chunk.length) {
+      const opcode = chunk[offset] & 0x0f;
+      const masked = (chunk[offset + 1] & 0x80) !== 0;
+      let len = chunk[offset + 1] & 0x7f;
+      let headerLen = 2;
+      if (len === 126) {
+        if (offset + 4 > chunk.length) return;
+        len = chunk.readUInt16BE(offset + 2);
+        headerLen = 4;
+      } else if (len === 127) return;
+      if (masked) headerLen += 4;
+      if (opcode === 0x8) {
+        socket.end();
+        return;
+      }
+      if (opcode === 0x9) socket.write(Buffer.from([0x8a, 0])); // pong
+      offset += headerLen + len;
+    }
+  });
+  socket.on("close", () => wsClients.delete(socket));
+  socket.on("error", () => wsClients.delete(socket));
 });
 
 const port = Number(process.env.PORT ?? 8971);
