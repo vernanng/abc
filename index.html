@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scion workflow on Pi Durable — Plan</title>
+<style>
+body{font:16px/1.6 system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;color:#111}
+table{border-collapse:collapse;width:100%;font-size:.9em}td,th{border:1px solid #ccc;padding:.4rem;text-align:left;vertical-align:top}
+code{background:#f0f0f0;padding:.1em .3em} .mono{font-family:ui-monospace,monospace;font-size:.8em;word-break:break-all}
+#log{background:#111;color:#0f0;padding:1rem;height:260px;overflow:auto;white-space:pre-wrap;font:13px ui-monospace,monospace}
+button{padding:.5rem .8rem;margin:.2rem;cursor:pointer} button:disabled{opacity:.4}
+.tag{background:#eef;padding:.1em .4em;border-radius:4px}
+</style></head><body>
+<h1>Vibe-coding: Anthropic's Scion workflow on Pi Durable</h1>
+<p>Not a Scion clone. Keep git. Borrow the workflow: agents online, changeset-sized work, intent review, no merge queue. Full plan: <a href="PLAN.md">PLAN.md</a></p>
+
+<h2>1. Proof (REA, 2026-10-21)</h2>
+<table><tr><th>Source</th><th>Evidence</th><th>Confidence</th></tr>
+<tr><td>Anthropic post</td><td class="mono">ev_4470bf6324a85cd16289914727980f92ea8ed1d64399683bc444aaf074092667<br>DOM sha256 e7646d07…d93fe2 (255,612 B)</td><td>observed / controlled-replay</td></tr>
+<tr><td>Pi Durable post</td><td class="mono">ev_bd32a16bc0020ecda214cdad511bd8e08deb6f255731c1ab6e66a0f72b3480d1<br>DOM sha256 d2069382…5290c (88,417 B)</td><td>observed / controlled-replay</td></tr>
+<tr><td>Pi Durable API</td><td><code>Harness.open, root(), submit(requestId), fork(entryId), defineTask, defineDoc</code> in the real README — <b>experimental</b></td><td>observed</td></tr></table>
+<p><small>Limitation: REA proves what Anthropic published, not their internal deployment.</small></p>
+
+<h2>2. How Anthropic works</h2>
+<ol>
+<li><b>Server does the work</b> — commits/merges/diff/blame server-side; sparse or no checkout. Scale: 2,500 → 30,000 merges/day, ~25M checkouts/day.</li>
+<li><b>Changeset, not branch</b> — delta vs first parent, lock-free, cost ∝ change. Refs discouraged; only <code>main</code> matters.</li>
+<li><b>Derived data</b> — blame/history computed recursively from parents, added without client changes.</li>
+<li><b>Intent review (Antique)</b> — humans review intent, semantic approvals, tell Claude "no" on constraint violations.</li>
+<li><b>No merge queue</b> — post-merge + pre-deploy tests; agents fix conflicts.</li>
+<li><b>Superfans</b> — one Claude per component watching telemetry in Slack.</li>
+<li><b>Quality by simulation</b> — hermetic sims, fuzzing, rate limiting.</li>
+<li><b>7 people, 5 months</b> — Scion + Antique + ~6 systems, while merges grew 10×.</li>
+</ol>
+<p>Don't copy: new VCS, Spanner, blob caches, virtual FS. Keep git.</p>
+
+<h2>3. Mapping → Pi Durable</h2>
+<table><tr><th>Scion / Antique</th><th>Pi Durable (git stays)</th></tr>
+<tr><td>Always-on server, API-first</td><td>One <code>Harness.open(sqlite)</code> owns storage; clients attach via <code>viewState()/watch()</code></td></tr>
+<tr><td>Changeset</td><td>Atomic Commit; <code>submit({requestId})</code> exactly-once</td></tr>
+<tr><td>No refs</td><td><code>fork(entryId)</code> + one short-lived git worktree per conversation; squash to main, delete</td></tr>
+<tr><td>Sparse checkout</td><td>Per-conversation <code>cwd</code> + <code>NodeExecutionEnv</code>, git sparse-checkout</td></tr>
+<tr><td>Derived data</td><td><code>defineDoc</code> (plan/review, <code>fork:"asOf"</code>), compaction, <code>search_history</code></td></tr>
+<tr><td>Semantic approvals</td><td><code>beforeTool</code> hook + <code>api.memo</code> approval; read-only reviewer on cheap model</td></tr>
+<tr><td>No merge queue</td><td>One landing task serializes pushes; background post-merge test; failure forks a fix conversation</td></tr>
+<tr><td>Superfans</td><td>Background ownerless subagents that steer main only on anomaly</td></tr>
+<tr><td>Crash-proof</td><td>Checkpointed Tasks; <code>replay:"safe"</code> only for reads, else model told <code>interrupted</code></td></tr></table>
+
+<h2>4. Try it: simulated harness</h2>
+<p>Same state machine as Phases 0–2, in-memory. Watch exactly-once submit, parallel forks, approval memo, crash/resume, and auto-fix on failed landing.</p>
+<div>
+<button id="b-submit">1. Submit task <span class="mono">job-42</span></button>
+<button id="b-fork" disabled>2. Fork ×3 (parallel)</button>
+<button id="b-approve" disabled>3. Approve push (memo)</button>
+<button id="b-land" disabled>4. Land + post-merge test</button>
+<button id="b-crash">💥 Crash &amp; resume</button>
+<button id="b-reset">Reset</button>
+</div>
+<div id="log"></div>
+
+<h2>5. Build phases</h2>
+<ol>
+<li><b>Phase 0 — Durability spike:</b> SQLite harness, kill mid-tool → <code>resume()</code> finishes; same <code>requestId</code> ≠ duplicate.</li>
+<li><b>Phase 1 — Vibe loop:</b> 3 forks, own worktrees, cheap triage / strong implementer; abort cascades.</li>
+<li><b>Phase 2 — Antique-lite:</b> Plan/Review docs, approval hook, landing task, auto-fix fork.</li>
+<li><b>Phase 3 — Superfans:</b> background watchers, compaction/handoff, multiplayer <code>watch()</code>.</li>
+<li><b>Phase 4 — Guardrails when pain appears:</b> <code>restartLimit</code> parked tasks, idempotency keys, hot-swap extensions.</li>
+</ol>
+<h2>6. Risks</h2>
+<ul><li>Pi Durable is experimental — pin the version.</li><li>One process owns one storage — multi-machine needs Durable Objects, not shared SQLite.</li><li>~100 ms commit window — non-idempotent tools must never be <code>replay:"safe"</code>.</li></ul>
+
+<script>
+// Miniature of the Pi Durable state machine: committed log is the truth, UI re-renders from it.
+let committed=[], seen=new Set(), approved=false, crashed=false, landed=0;
+const log=document.getElementById('log'), $=id=>document.getElementById(id);
+function commit(line){ committed.push(line); log.textContent=committed.join('\n'); log.scrollTop=1e9; }
+function submit(id,text){ if(seen.has(id)){commit(`↩ submit(${id}) duplicate → original returned, no new work`);return false;} seen.add(id); commit(`✓ commit: input "${text}" requestId=${id}`); return true; }
+$('b-submit').onclick=()=>{ if(submit('job-42','Fix the flaky login test')){ $('b-fork').disabled=false; commit('  pi.generation started (checkpointed)'); } };
+$('b-fork').onclick=()=>{ ['impl (strong model)','review (cheap, read-only)','triage (cheap)'].forEach((n,i)=>setTimeout(()=>{commit(`  fork #${i+1} ${n} → own worktree, running concurrently`); if(i==2){$('b-approve').disabled=false;$('b-land').disabled=false;}},i*300)); $('b-fork').disabled=true; };
+$('b-approve').onclick=()=>{ if(approved){commit('↩ approval memo found → not asking again');return;} approved=true; commit('✓ hook beforeTool: approval:push memo stored (survives restart)'); };
+$('b-land').onclick=()=>{ if(!approved){commit('✗ beforeTool BLOCKED push: no approval memo');return;} landed++; commit(`… landing task: squash → main (#${landed}), post-merge test running in background`); setTimeout(()=>{ if(landed==1){commit('✗ post-merge test FAILED → fix conversation forked automatically (no merge queue, no human triage)');} else commit('✓ post-merge test passed'); },600); };
+$('b-crash').onclick=()=>{ crashed=true; commit('💥 process died mid-tool. Non-safe tool will NOT rerun; safe reads replay.'); setTimeout(()=>{commit(`↻ new process: Harness.open(same storage) → resume() from last checkpoint. State intact: submissions=${seen.size}, approved=${approved}, commits=${committed.length}`);},500); };
+$('b-reset').onclick=()=>{ committed=[];seen.clear();approved=false;landed=0; log.textContent=''; $('b-fork').disabled=$('b-approve').disabled=$('b-land').disabled=true; commit('— reset (demo only; real harness deletes nothing) —'); };
+commit('Harness.open(agent.sqlite) — submit a task to begin.');
+</script>
+</body></html>
