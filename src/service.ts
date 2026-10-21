@@ -173,6 +173,10 @@ function toRecord(event: string, delivery: string, payload: IssuePayload): Deliv
       prNumber,
     };
   }
+  // Our own bot's posts (e.g. the self-healing issue) are not instructions.
+  if ((event === "issues" || event === "issue_comment") && (payload.sender?.login ?? "").endsWith("[bot]")) {
+    return undefined;
+  }
   const isIssueOpen = event === "issues" && payload.action === "opened";
   const isAgentComment =
     event === "issue_comment" &&
