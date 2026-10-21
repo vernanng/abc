@@ -18,6 +18,7 @@ import { CodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
 import { classify, type ChangedFile } from "./classify.js";
 import { consoleJobs, consoleStats, layOutGraph } from "./console-data.js";
 import { GitHubApp } from "./github.js";
+import { worktreeDirName } from "./worktree.js";
 
 for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
   const i = line.indexOf("=");
@@ -177,6 +178,7 @@ function toRecord(event: string, delivery: string, payload: IssuePayload): Deliv
       login: payload.review.user?.login ?? "",
       posted: false,
       prNumber,
+      detectedAt: Date.now(),
     };
   }
   // Our own bot's posts (e.g. the self-healing issue) are not instructions.
@@ -202,6 +204,7 @@ function toRecord(event: string, delivery: string, payload: IssuePayload): Deliv
     association: (isAgentComment ? payload.comment?.author_association : payload.issue.author_association) ?? "",
     login: payload.sender?.login ?? "",
     posted: false,
+    detectedAt: Date.now(),
   };
 }
 
@@ -364,7 +367,7 @@ async function tryMerge(job: DeliveryRecord): Promise<string> {
     .postComment(job.prNumber, `Landed (squash) on intent approval by @${job.approvalBy}. Post-merge CI is the gate (SPEC 6.1).`)
     .catch(() => undefined);
   if (job.branch !== undefined) {
-    const wt = join(repoRoot, worktreeRoot, job.branch.replace(/^agent\//, ""));
+    const wt = join(repoRoot, worktreeRoot, worktreeDirName(job.branch));
     try {
       git(repoRoot, "worktree", "remove", "--force", wt);
       git(repoRoot, "branch", "-D", job.branch);
@@ -416,7 +419,7 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
     const instruction =
       `GitHub issue #${record.issueNumber}: ${record.title}\n\n${record.body}` +
       (record.commentBody ? `\n\nTriggering comment: ${record.commentBody}` : "");
-    const wt = join(repoRoot, worktreeRoot, jobId);
+    const wt = join(repoRoot, worktreeRoot, worktreeDirName(branch));
     mkdirSync(join(repoRoot, worktreeRoot), { recursive: true });
     git(repoRoot, "fetch", "origin", "main");
     if (!existsSync(wt)) {
@@ -545,12 +548,12 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
 // merge origin/main into the PR branch in its worktree; only conflicted
 // files go to the worker model, then the service commits and pushes.
 async function resolveConflict(job: DeliveryRecord): Promise<void> {
-  const jobId = (job.branch ?? "").replace(/^agent\//, "").replace(/^revert\//, "");
-  const wt = join(repoRoot, worktreeRoot, jobId);
+  const branch = job.branch ?? "";
+  const wt = join(repoRoot, worktreeRoot, worktreeDirName(branch));
   job.resolveAttempts = (job.resolveAttempts ?? 0) + 1;
   saveJournal();
   git(repoRoot, "fetch", "origin", "main");
-  if (!existsSync(wt)) git(repoRoot, "worktree", "add", wt, job.branch ?? "");
+  if (!existsSync(wt)) git(repoRoot, "worktree", "add", wt, branch);
   try {
     git(wt, "merge", "origin/main", "--no-edit");
   } catch {
@@ -601,7 +604,7 @@ async function driveReview(record: DeliveryRecord): Promise<string> {
 async function createRevert(record: DeliveryRecord): Promise<string> {
   const sha = record.headSha ?? "";
   const branch = `revert/${sha.slice(0, 8)}`;
-  const wt = join(repoRoot, worktreeRoot, branch.replace("/", "-"));
+  const wt = join(repoRoot, worktreeRoot, worktreeDirName(branch));
   mkdirSync(join(repoRoot, worktreeRoot), { recursive: true });
   git(repoRoot, "fetch", "origin", "main");
   if (!existsSync(wt)) git(repoRoot, "worktree", "add", "-b", branch, wt, "origin/main");

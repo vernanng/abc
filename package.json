@@ -13,6 +13,7 @@
     "check:classify": "npm run build && node dist/classify.check.js",
     "check:proof-break": "npm run build && node dist/proof-break.check.js",
     "check:console": "npm run build && node dist/console.check.js",
+    "check:worktree": "npm run build && node dist/worktree.check.js",
     "spike:bun": "bun src/spike.ts",
     "phase1:bun": "bun src/phase1.ts",
     "test": "npm run typecheck"
