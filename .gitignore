@@ -3,6 +3,7 @@
 !.env.example
 *.pem
 agent.sqlite*
+worktrees/
 node_modules/
 dist/
 proof.txt

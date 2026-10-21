@@ -105,4 +105,46 @@ export class GitHubApp {
       body: { body },
     });
   }
+
+  // Phase C: pull requests. The installation token is non-admin, so branch
+  // protection (1 approval, CODEOWNERS) binds every merge attempted here.
+  async createPull(title: string, head: string, base: string, body: string): Promise<{ number: number; html_url: string }> {
+    const token = await this.installationToken();
+    return this.api(`/repos/${this.owner}/${this.name}/pulls`, {
+      method: "POST",
+      token,
+      body: { title, head, base, body },
+    });
+  }
+
+  async findOpenPull(headBranch: string): Promise<number | undefined> {
+    const token = await this.installationToken();
+    const pulls = await this.api<Array<{ number: number }>>(
+      `/repos/${this.owner}/${this.name}/pulls?state=open&head=${encodeURIComponent(`${this.owner}:${headBranch}`)}`,
+      { token },
+    );
+    return pulls[0]?.number;
+  }
+
+  async listReviews(pullNumber: number): Promise<Array<{ login: string; state: string; association: string }>> {
+    const token = await this.installationToken();
+    const reviews = await this.api<Array<{ user?: { login?: string }; state?: string; author_association?: string }>>(
+      `/repos/${this.owner}/${this.name}/pulls/${pullNumber}/reviews?per_page=100`,
+      { token },
+    );
+    return reviews.map((review) => ({
+      login: review.user?.login ?? "",
+      state: review.state ?? "",
+      association: review.author_association ?? "",
+    }));
+  }
+
+  async mergePull(pullNumber: number): Promise<void> {
+    const token = await this.installationToken();
+    await this.api(`/repos/${this.owner}/${this.name}/pulls/${pullNumber}/merge`, {
+      method: "PUT",
+      token,
+      body: { merge_method: "squash" },
+    });
+  }
 }
