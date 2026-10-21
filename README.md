@@ -2,7 +2,7 @@
 
 Scion-style vibe coding on [Pi Durable](https://github.com/earendil-works/pi) + GitHub: durable agents working on one repo in parallel, with human **intent review** before landing — no merge queue, no pre-merge CI gate, post-merge verification instead.
 
-Full design: [docs/SPEC.md](docs/SPEC.md) (binding — edit it before changing a requirement) · Background/plan: [docs/PLAN.md](docs/PLAN.md) (historical) · Interactive demo: [index.html](index.html) (simulation only, served at `/?demo=1`)
+Full design: [docs/SPEC.md](docs/SPEC.md) (binding — edit it before changing a requirement) · Agent/session instructions: [AGENTS.md](AGENTS.md) · Background/plan: [docs/PLAN.md](docs/PLAN.md) (historical) · Interactive demo: [index.html](index.html) (simulation only, served at `/?demo=1`)
 
 ## How it works
 
@@ -97,6 +97,7 @@ CI (`.github/workflows/ci.yml`) runs build + all three checks + console build on
 | `docs/PLAN.md` | Historical source plan and Scion → Pi Durable mapping |
 | `docs/GITHUB_APP.md` | GitHub App creation/install steps + live endpoint values |
 | `.env.example` | Config template: only the env vars the code actually reads |
+| `AGENTS.md` | Compact instructions for OpenCode/agent sessions (commands, hard constraints, shipping) |
 
 ## Principles
 
