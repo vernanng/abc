@@ -1,0 +1,4 @@
+# Per-directory IAM (SPEC 6.1): sensitive paths need owner intent approval.
+/.github/ @vernanng
+SPEC.md @vernanng
+PLAN.md @vernanng
