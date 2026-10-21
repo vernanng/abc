@@ -1,0 +1,2 @@
+# Conflict proof
+version: B
