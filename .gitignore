@@ -4,3 +4,4 @@
 *.pem
 agent.sqlite
 node_modules/
+proof.txt
