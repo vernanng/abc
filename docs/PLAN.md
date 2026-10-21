@@ -1,5 +1,7 @@
 # Vibe-coding setup: Anthropic's Scion workflow, rebuilt on Pi Durable (not a Scion clone)
 
+> **Historical — 2026-10-21 source plan, kept as background.** The system in this plan has been built: all phases (0, 1, A–D) are proven and the harness is live on a Linux VPS (see `README.md` for current state and `docs/SPEC.md` for the binding spec). Details below that describe pre-build choices (e.g. hosting, model picks, approval design) may be superseded there — do not use this file as an ops reference.
+
 ## 1. Proof (REA, 2026-10-21)
 
 Scion is internal/closed — no binary exists to reverse. Proof is documentary, captured live in a browser, not scraped from memory:

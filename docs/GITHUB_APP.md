@@ -3,14 +3,16 @@
 Create this manually in GitHub; it cannot be created with the repository token.
 Target installation: **only `vernanng/abc`**.
 
+**Status: done and live.** App `vernanng-abc-agent` is installed on `vernanng/abc` only; the webhook is active and points at the VPS (see §5 for current values). This doc is kept as the setup record / rebuild runbook.
+
 ## 1. Create the app
 
 Open: GitHub → Settings → Developer settings → GitHub Apps → New GitHub App.
 
 - **Name:** `vernanng-abc-agent` (change only if GitHub says it is taken)
 - **Homepage URL:** `https://github.com/vernanng/abc`
-- **Webhook active:** unchecked for now; the Mac proof has no public webhook URL yet
-- **Webhook URL:** `https://example.com/webhook` as a temporary placeholder
+- **Webhook active:** checked (live)
+- **Webhook URL:** `https://piagentdev.tail2a29a7.ts.net/webhook` (Tailscale Funnel on the VPS)
 - **Webhook secret:** copy `WEBHOOK_SECRET` from the local `.env` file. Do not commit or paste it elsewhere.
 
 ## 2. Repository permissions
@@ -44,16 +46,16 @@ No organization or account permissions.
 1. Set **Where can this GitHub App be installed?** to **Only on this account**.
 2. Create the app, then install it on **only `vernanng/abc`**.
 3. Generate a private key and download the `.pem` file.
-4. Move it outside the repo, for example `~/.config/abc/github-app.pem`, then run `chmod 600 ~/.config/abc/github-app.pem`.
-5. In local `.env`, set:
+4. Move it outside the repo and `chmod 600` it. On the VPS (live): `/home/harness/.config/abc/github-app.pem`, owned by `harness`. A copy remains on the Mac at `/Users/vernantjoa/.config/abc/github-app.pem` for local runs.
+5. In `.env`, set:
    - `GITHUB_APP_ID=<numeric App ID from GitHub>`
-   - `GITHUB_PRIVATE_KEY_PATH=/Users/vernantjoa/.config/abc/github-app.pem`
+   - `GITHUB_PRIVATE_KEY_PATH=<absolute path to the .pem on that host>`
    - keep the generated `WEBHOOK_SECRET` unchanged.
 
 Never commit `.env` or the `.pem` file; both are ignored by git.
 
-## 5. Later, before live webhooks
+## 5. Live endpoints (2026-10-22)
 
-The App webhook stays inactive until the harness has a reachable HTTPS endpoint
-(Mac proof via a tunnel, VPS later). Then set the real `/webhook` URL, paste the
-same secret if GitHub asks again, and activate webhooks.
+- **GitHub App webhook:** `https://piagentdev.tail2a29a7.ts.net/webhook`, active. To re-point it (host move), PATCH the App's hook config with an App JWT, then verify a genuine delivery is triaged (unsigned POSTs must return 401).
+- **OAuth App** (separate from the GitHub App; console login): Homepage URL `https://piagentdev.tail2a29a7.ts.net`, Authorization callback URL `https://piagentdev.tail2a29a7.ts.net/auth/callback`. Its client ID/secret live in `.env` as `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`.
+- Cutover lesson: on a fresh Tailscale node, restart `tailscaled` after `tailscale funnel --bg 8971`, or the public DNS record never publishes — GitHub then reports 502 "failed to connect to host" while tailnet-local checks misleadingly pass.
