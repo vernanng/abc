@@ -319,10 +319,15 @@ async function runRole(options: {
 async function tryMerge(job: DeliveryRecord): Promise<string> {
   if (job.prNumber === undefined) return "no-pr";
   if (job.jobStatus === "merged") return "already-merged";
+  // The approval memo is first-write-wins and survives pushes (SPEC: no
+  // re-review on landing conflicts); GitHub's review state is the fallback
+  // for approvals recorded before this journal existed.
   const reviews = await github.listReviews(job.prNumber);
-  let approver = reviews.find(
-    (review) => review.state === "APPROVED" && !review.login.endsWith("[bot]") && ASSOCIATIONS.has(review.association),
-  )?.login;
+  let approver =
+    job.approvalBy ??
+    reviews.find(
+      (review) => review.state === "APPROVED" && !review.login.endsWith("[bot]") && ASSOCIATIONS.has(review.association),
+    )?.login;
   if (approver === undefined) {
     for (const review of reviews) {
       if (review.state === "APPROVED" && review.login && !review.login.endsWith("[bot]") && (await github.isCollaborator(review.login))) {
