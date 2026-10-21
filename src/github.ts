@@ -139,6 +139,39 @@ export class GitHubApp {
     }));
   }
 
+  async createIssue(title: string, body: string): Promise<number> {
+    const token = await this.installationToken();
+    const issue = await this.api<{ number: number }>(`/repos/${this.owner}/${this.name}/issues`, {
+      method: "POST",
+      token,
+      body: { title, body },
+    });
+    return issue.number;
+  }
+
+  async getPull(pullNumber: number): Promise<{ merged: boolean; mergeable: boolean | null }> {
+    const token = await this.installationToken();
+    const pull = await this.api<{ merged_at?: string | null; mergeable?: boolean | null }>(
+      `/repos/${this.owner}/${this.name}/pulls/${pullNumber}`,
+      { token },
+    );
+    return { merged: pull.merged_at != null, mergeable: pull.mergeable ?? null };
+  }
+
+  // Completed/failed workflow runs on main, newest first (post-merge gate).
+  async listMainRuns(): Promise<Array<{ headSha: string; status: string; conclusion: string | null; url: string }>> {
+    const token = await this.installationToken();
+    const result = await this.api<{
+      workflow_runs?: Array<{ head_sha: string; status: string; conclusion: string | null; html_url: string }>;
+    }>(`/repos/${this.owner}/${this.name}/actions/runs?branch=main&per_page=10`, { token });
+    return (result.workflow_runs ?? []).map((run) => ({
+      headSha: run.head_sha,
+      status: run.status,
+      conclusion: run.conclusion,
+      url: run.html_url,
+    }));
+  }
+
   async mergePull(pullNumber: number): Promise<void> {
     const token = await this.installationToken();
     await this.api(`/repos/${this.owner}/${this.name}/pulls/${pullNumber}/merge`, {

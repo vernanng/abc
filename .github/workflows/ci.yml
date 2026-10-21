@@ -1,0 +1,18 @@
+name: ci
+# Post-merge CI is the real gate (SPEC 6.1). On PRs this is advisory only;
+# branch protection requires no status checks.
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: node dist/classify.check.js

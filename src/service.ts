@@ -114,7 +114,7 @@ const ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 // redeliver. The comment marker on GitHub is the final dedupe.
 interface DeliveryRecord {
   delivery: string;
-  kind?: "triage" | "job" | "review"; // absent in old journal entries = triage
+  kind?: "triage" | "job" | "review" | "cifail"; // absent in old journal entries = triage
   issueNumber: number;
   title: string;
   body: string;
@@ -129,6 +129,11 @@ interface DeliveryRecord {
   prNumber?: number;
   jobStatus?: string; // working | pr-open | merged | no-changes | failed
   approvalBy?: string; // first write wins (SPEC 6.1)
+  resolveAttempts?: number;
+  // Phase D (kind "cifail"): a red post-merge CI run on main being healed.
+  headSha?: string;
+  detectedAt?: number;
+  revertPrNumber?: number;
 }
 const journalPath = `${storagePath}.deliveries.json`;
 const journal: DeliveryRecord[] = existsSync(journalPath)
@@ -243,6 +248,30 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, stdio: "pipe", timeout: 180_000 }).toString();
 }
 
+// Service-side push with the App token; the token never reaches a model and
+// is never logged (errors are sanitized to a fixed message).
+async function pushBranch(wt: string, branch: string): Promise<void> {
+  const token = await github.installationToken();
+  try {
+    execFileSync("git", ["push", `https://x-access-token:${token}@github.com/${repoSlug}.git`, branch], {
+      cwd: wt,
+      stdio: "pipe",
+      timeout: 180_000,
+    });
+  } catch {
+    throw new Error("git push of draft branch failed");
+  }
+}
+
+async function sessionCostUsd(): Promise<number> {
+  const usage = await harness.usage(ctx);
+  let total = 0;
+  for (const entry of Object.values(usage.models)) {
+    total += (entry as { cost?: { total?: number } }).cost?.total ?? 0;
+  }
+  return total;
+}
+
 async function authorized(record: DeliveryRecord): Promise<boolean> {
   return ASSOCIATIONS.has(record.association) || (record.login !== "" && (await github.isCollaborator(record.login)));
 }
@@ -335,6 +364,20 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
     markPosted(record.delivery);
     return "already-merged";
   }
+  if (record.prNumber !== undefined) {
+    // Existing PR (incl. system records like auto-reverts): merge when a
+    // human approval exists; if GitHub reports a conflict, the worker
+    // conversation resolves it — never a merge queue (SPEC Phase D).
+    const result = await tryMerge(record);
+    if (result === "merge-blocked" && record.approvalBy !== undefined && (record.resolveAttempts ?? 0) < 2) {
+      const pull = await github.getPull(record.prNumber);
+      if (!pull.merged && pull.mergeable === false) {
+        await resolveConflict(record);
+        return "conflict-resolution-pushed";
+      }
+    }
+    return result;
+  }
   if (!(await authorized(record))) {
     if (!(await github.findCommentWithMarker(record.issueNumber, marker))) {
       await github.postComment(record.issueNumber, `${marker}\nOnly repo collaborators can instruct the agent.`);
@@ -361,6 +404,7 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
         git(repoRoot, "worktree", "add", wt, branch); // resume: branch already exists
       }
     }
+    const costBefore = await sessionCostUsd();
     const workerText = await runRole({
       model: workerModel,
       cwd: wt,
@@ -377,6 +421,20 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
       markPosted(record.delivery);
       await github.postComment(record.issueNumber, `${marker}\nAgent job failed after retries (worker model unavailable).`);
       return "worker-failed";
+    }
+    // Budget guard (C9): a job that overspends is parked for a human before
+    // anything is committed or pushed.
+    const spent = (await sessionCostUsd()) - costBefore;
+    const budget = Number(process.env.BUDGET_PER_JOB_USD ?? "2");
+    if (spent > budget) {
+      record.jobStatus = "parked";
+      markPosted(record.delivery);
+      await github.postComment(
+        record.issueNumber,
+        `${marker}\nJob parked: worker spend $${spent.toFixed(4)} exceeded the per-job budget $${budget}. ` +
+          `No PR was opened; the worktree is kept locally. A human can raise BUDGET_PER_JOB_USD and re-instruct.`,
+      );
+      return "parked-budget";
     }
     git(wt, "add", "-A");
     const changed = git(wt, "status", "--porcelain").trim();
@@ -417,24 +475,15 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
         readOnly: true,
         instructions:
           "You are an adversarial, read-only reviewer. Critique only: constraint violations, over-engineering, " +
-          "missing tests (flag missing tests, or missing simulation/fuzz for infra-like changes), and risks. Short bullets.",
+          "missing tests, and risks. Short bullets. If the change touches code (non-doc files) and adds no test " +
+          "files (or no simulation/fuzz cases for infra-like changes), one bullet MUST start with 'Missing tests:'.",
         content:
           `Review this change for GitHub issue #${record.issueNumber}.\nFiles changed:\n` +
           `${files.map((file) => `- ${file.path}`).join("\n")}\nClassifier: level=${result.level} labels=${result.labels.join(",") || "none"}\n` +
           `Diff (truncated):\n\`\`\`diff\n${diff.slice(0, 12_000)}\n\`\`\``,
         requestId: `${record.delivery}:reviewer`,
       })) ?? "(reviewer produced no critique)";
-    // Service-side push with the App token; the token never reaches a model.
-    const token = await github.installationToken();
-    try {
-      execFileSync("git", ["push", `https://x-access-token:${token}@github.com/${repoSlug}.git`, branch], {
-        cwd: wt,
-        stdio: "pipe",
-        timeout: 180_000,
-      });
-    } catch {
-      throw new Error("git push of draft branch failed"); // sanitized: never log the token URL
-    }
+    await pushBranch(wt, branch);
     const packet = [
       `## Intent packet — issue #${record.issueNumber}`,
       `### Instruction\n${instruction.slice(0, 2000)}`,
@@ -462,6 +511,41 @@ async function driveJob(record: DeliveryRecord): Promise<string> {
   return tryMerge(record);
 }
 
+// Landing conflicts are fixed by the worker conversation, never a queue:
+// merge origin/main into the PR branch in its worktree; only conflicted
+// files go to the worker model, then the service commits and pushes.
+async function resolveConflict(job: DeliveryRecord): Promise<void> {
+  const jobId = (job.branch ?? "").replace(/^agent\//, "").replace(/^revert\//, "");
+  const wt = join(repoRoot, worktreeRoot, jobId);
+  job.resolveAttempts = (job.resolveAttempts ?? 0) + 1;
+  saveJournal();
+  git(repoRoot, "fetch", "origin", "main");
+  if (!existsSync(wt)) git(repoRoot, "worktree", "add", wt, job.branch ?? "");
+  try {
+    git(wt, "merge", "origin/main", "--no-edit");
+  } catch {
+    // conflicted merge in progress; resolved below
+  }
+  const gitDir = git(wt, "rev-parse", "--absolute-git-dir").trim();
+  if (existsSync(join(gitDir, "MERGE_HEAD"))) {
+    const text = await runRole({
+      model: workerModel,
+      cwd: wt,
+      instructions:
+        "You resolve merge conflicts in a dedicated git worktree. Never run git or gh; just edit the conflicted files. " +
+        "Remove all conflict markers, keep both sides' intent where possible, keep it minimal.",
+      content:
+        "A merge of origin/main into this branch is in progress and has conflicts. " +
+        "Find the conflicted files (they contain <<<<<<< markers), resolve them, and reply with what you kept.",
+      requestId: `${job.delivery}:resolve${job.resolveAttempts}`,
+    });
+    if (text === undefined) throw new Error("conflict resolution failed (worker unavailable)");
+    git(wt, "add", "-A");
+    git(wt, "-c", "user.name=abc-agent", "-c", "user.email=abc-agent@localhost", "commit", "--no-edit");
+  }
+  if (job.branch !== undefined) await pushBranch(wt, job.branch);
+}
+
 async function driveReview(record: DeliveryRecord): Promise<string> {
   const job = journal.find((existing) => existing.kind === "job" && existing.prNumber === record.prNumber);
   markPosted(record.delivery);
@@ -476,9 +560,143 @@ async function driveReview(record: DeliveryRecord): Promise<string> {
   return tryMerge(job);
 }
 
+// --- Phase D: post-merge self-healing ------------------------------------
+// The sweeper polls main's CI (the real gate, SPEC 6.1). A red run opens a
+// fix issue + fix job (fix forwards); if main is still red after the window
+// (ABC_REVERT_AFTER_MINUTES, default 30), a git-only revert PR with reasons
+// is opened. Both land through the same human intent approval as any PR.
+// System journal records (login "abc-agent-system") are created by the
+// service itself, never from webhook input, and skip instruction auth.
+
+async function createRevert(record: DeliveryRecord): Promise<string> {
+  const sha = record.headSha ?? "";
+  const branch = `revert/${sha.slice(0, 8)}`;
+  const wt = join(repoRoot, worktreeRoot, branch.replace("/", "-"));
+  mkdirSync(join(repoRoot, worktreeRoot), { recursive: true });
+  git(repoRoot, "fetch", "origin", "main");
+  if (!existsSync(wt)) git(repoRoot, "worktree", "add", "-b", branch, wt, "origin/main");
+  try {
+    git(wt, "revert", "--no-edit", sha);
+  } catch {
+    git(wt, "revert", "--abort");
+    record.revertPrNumber = -1; // attempted; do not retry every sweep
+    saveJournal();
+    await github.postComment(
+      record.issueNumber,
+      `Auto-revert of ${sha.slice(0, 7)} conflicted with later landings; a human must revert manually. Main is still red.`,
+    );
+    return "revert-conflicted";
+  }
+  await pushBranch(wt, branch);
+  const minutes = Math.round((Date.now() - (record.detectedAt ?? Date.now())) / 60_000);
+  const prNumber = (
+    await github.createPull(
+      `[agent] Revert ${sha.slice(0, 7)} — main red for ${minutes} min`,
+      branch,
+      "main",
+      `## Auto-revert (SPEC 6.1)\nMain has been red for ~${minutes} minutes since landing \`${sha}\` ` +
+        `failed post-merge CI (issue #${record.issueNumber}). The fix-forwards window expired, so this ` +
+        `revert PR was opened automatically. Landing it still needs a human intent approval, like any PR.`,
+    )
+  ).number;
+  record.revertPrNumber = prNumber;
+  journal.push({
+    delivery: `revert-${sha.slice(0, 8)}`,
+    kind: "job",
+    issueNumber: record.issueNumber,
+    title: `Revert ${sha.slice(0, 7)}`,
+    body: "",
+    commentBody: "",
+    association: "OWNER",
+    login: "abc-agent-system",
+    posted: false,
+    branch,
+    prNumber,
+    jobStatus: "pr-open",
+  });
+  saveJournal();
+  await github.postComment(
+    record.issueNumber,
+    `Main still red after the fix window: auto-revert PR #${prNumber} opened (reverts ${sha.slice(0, 7)}). It lands on human intent approval.`,
+  );
+  return "revert-opened";
+}
+
+async function driveCifail(record: DeliveryRecord): Promise<string> {
+  const runs = await github.listMainRuns();
+  const latest = runs.find((run) => run.status === "completed");
+  if (latest !== undefined && latest.conclusion === "success" && latest.headSha !== record.headSha) {
+    record.jobStatus = "resolved";
+    markPosted(record.delivery);
+    await github
+      .postComment(record.issueNumber, `Main is green again (run: ${latest.url}). Self-healing loop closed.`)
+      .catch(() => undefined);
+    return "resolved";
+  }
+  const windowMs = Number(process.env.ABC_REVERT_AFTER_MINUTES ?? "30") * 60_000;
+  if (record.revertPrNumber === undefined && Date.now() - (record.detectedAt ?? 0) > windowMs) {
+    return createRevert(record);
+  }
+  return "still-red";
+}
+
+let ciPolling = false;
+async function pollMainCi(): Promise<void> {
+  if (ciPolling) return;
+  ciPolling = true;
+  try {
+    const runs = await github.listMainRuns();
+    const latest = runs.find((run) => run.status === "completed");
+    if (latest === undefined || latest.conclusion !== "failure") return;
+    const key = latest.headSha.slice(0, 8);
+    if (journal.some((record) => record.delivery === `cifail-${key}`)) return;
+    const issueNumber = await github.createIssue(
+      `[agent] Post-merge CI failed on main (${latest.headSha.slice(0, 7)})`,
+      `Post-merge CI (the real gate, SPEC 6.1) failed on \`main\` at \`${latest.headSha}\`.\nRun: ${latest.url}\n` +
+        `A fix job has been forked automatically; it will open a fix PR for light intent approval. ` +
+        `If main stays red past the revert window, an auto-revert PR follows.`,
+    );
+    const cifail: DeliveryRecord = {
+      delivery: `cifail-${key}`,
+      kind: "cifail",
+      issueNumber,
+      title: "Post-merge CI failure",
+      body: "",
+      commentBody: "",
+      association: "OWNER",
+      login: "abc-agent-system",
+      posted: false,
+      headSha: latest.headSha,
+      detectedAt: Date.now(),
+    };
+    const fix: DeliveryRecord = {
+      delivery: `cifix-${key}`,
+      kind: "job",
+      issueNumber,
+      title: `Fix post-merge CI failure on main (${latest.headSha.slice(0, 7)})`,
+      body:
+        `Post-merge CI is failing on main at commit ${latest.headSha} (run: ${latest.url}). ` +
+        `Run \`npm run build\` in your worktree to see the failure, find the cause in the most recent landing, and fix it minimally.`,
+      commentBody: "",
+      association: "OWNER",
+      login: "abc-agent-system",
+      posted: false,
+    };
+    journal.push(cifail, fix);
+    saveJournal();
+    console.log(`ci: main red at ${key} -> issue #${issueNumber}, fix job forked`);
+    driveOnce(fix);
+  } catch (error) {
+    console.error("ci poll failed", String(error).slice(0, 200));
+  } finally {
+    ciPolling = false;
+  }
+}
+
 async function driveDelivery(record: DeliveryRecord): Promise<string> {
   if (record.kind === "job") return driveJob(record);
   if (record.kind === "review") return driveReview(record);
+  if (record.kind === "cifail") return driveCifail(record);
   return driveTriage(record);
 }
 
@@ -493,6 +711,7 @@ function driveOnce(record: DeliveryRecord): void {
 }
 
 function sweepUnposted(): void {
+  void pollMainCi();
   for (const record of journal.filter((existing) => !existing.posted)) driveOnce(record);
 }
 
