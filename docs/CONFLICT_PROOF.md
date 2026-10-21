@@ -1,2 +1,2 @@
 # Conflict proof
-version: B
+version: C
