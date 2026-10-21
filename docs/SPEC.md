@@ -59,7 +59,7 @@ State that must be durable (all in harness SQLite storage on the VPS, none in pr
 
 ## 5. Interfaces
 
-**Inbound (GitHub App webhooks, signature-verified):** `issues.opened/edited`, `issue_comment.created` (`@agent …`), `pull_request_review_comment`, `check_run.completed` / Actions failure, `pull_request.closed`. Each handler: dedupe by delivery ID, then `submit()`; unrecognized events are acked `200` and dropped. **Instruction authorization:** only repo collaborators may instruct (decided 2026-10-21). A non-collaborator issue/comment gets one refusal comment and runs no agent, forks no conversation, and spends no budget.
+**Inbound (GitHub App webhooks, signature-verified):** `issues.opened/edited`, `issue_comment.created` (`@agent …`), `pull_request_review.submitted` (intent approval), `pull_request_review_comment`, `check_run.completed`, `workflow_run.completed` (Actions failure), `pull_request.closed`. Setup: `docs/GITHUB_APP.md`. Each handler: dedupe by delivery ID, then `submit()`; unrecognized events are acked `200` and dropped. **Instruction authorization:** only repo collaborators may instruct (decided 2026-10-21). A non-collaborator issue/comment gets one refusal comment and runs no agent, forks no conversation, and spends no budget.
 
 **Outbound (GitHub REST, installation token, least scope):** read issue/PR, create/update PR, comment, request review, merge (squash only). Token is injected into the execution env / API client; never present in tool arguments or transcript text.
 
