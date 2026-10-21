@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "spike": "npm run build && node dist/spike.js",
     "phase1": "npm run build && node dist/phase1.js",
+    "service": "npm run build && node dist/service.js",
     "spike:bun": "bun src/spike.ts",
     "phase1:bun": "bun src/phase1.ts",
     "test": "npm run typecheck"
